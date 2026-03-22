@@ -1,0 +1,100 @@
+{
+  "actions": {
+    "walk": {
+      "enabled": true,
+      "weight": 1,
+      "type": "movement",
+      "description": "随机行走",
+      "config": {
+        "min_distance": 30,
+        "max_distance": 100
+      }
+    },
+    "sit": {
+      "enabled": true,
+      "weight": 1,
+      "type": "animation",
+      "description": "坐姿动画",
+      "animations": [
+        {
+          "path": "animations/sit/sit_animation.gif",
+          "width": 200,
+          "height": 159
+        },
+        {
+          "path": "animations/sit1/sit_animation.gif",
+          "width": 200,
+          "height": 159
+        }
+      ]
+    },
+    "read": {
+      "enabled": true,
+      "weight": 1,
+      "type": "animation",
+      "description": "阅读动画",
+      "animations": [
+        {
+          "path": "animations/read/read_animation.gif",
+          "width": 200,
+          "height": 159
+        }
+      ]
+    },
+    "sleep": {
+      "enabled": true,
+      "weight": 1,
+      "type": "animation",
+      "description": "",
+      "animations": [
+        {
+          "path": "animations/sleep/1.webp",
+          "width": 200,
+          "height": 159
+        }
+      ]
+    },
+    "eat": {
+      "enabled": true,
+      "weight": 1,
+      "type": "animation",
+      "description": "",
+      "animations": [
+        {
+          "path": "animations/eat/1.webp",
+          "width": 200,
+          "height": 159
+        }
+      ]
+    },
+    "write": {
+      "enabled": true,
+      "weight": 1,
+      "type": "animation",
+      "description": "",
+      "animations": [
+        {
+          "path": "animations/write/1.webp",
+          "width": 200,
+          "height": 159
+        }
+      ]
+    },
+    "bored": {
+      "enabled": true,
+      "weight": 1,
+      "type": "animation",
+      "description": "",
+      "animations": [
+        {
+          "path": "animations/bored/1.webp",
+          "width": 200,
+          "height": 159
+        }
+      ]
+    }
+  },
+  "app": {
+    "current_pet": "default"
+  }
+}

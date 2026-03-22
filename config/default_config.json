@@ -1,0 +1,64 @@
+{
+  "actions": {
+    "walk": {
+      "enabled": true,
+      "weight": 1,
+      "type": "movement",
+      "description": "随机行走",
+      "config": {
+        "min_distance": 30,
+        "max_distance": 100
+      }
+    },
+    "sit": {
+      "enabled": true,
+      "weight": 1,
+      "type": "animation",
+      "description": "坐姿动画",
+      "animations": [
+        {
+          "path": "animations/sit/sit_animation.gif",
+          "width": 200,
+          "height": 159
+        },
+        {
+          "path": "animations/sit1/sit_animation.gif",
+          "width": 200,
+          "height": 159
+        }
+      ]
+    },
+    "read": {
+      "enabled": true,
+      "weight": 1,
+      "type": "animation",
+      "description": "阅读动画",
+      "animations": [
+        {
+          "path": "animations/read/read_animation.gif",
+          "width": 200,
+          "height": 159
+        }
+      ]
+    }
+  },
+  "rest_reminder": {
+    "enabled": true,
+    "interval_minutes": 55,
+    "countdown_seconds": 300,
+    "animation": {
+      "path": "animations/hui/hui_animation.gif",
+      "width": 200,
+      "height": 159
+    }
+  },
+  "movement": {
+    "random_interval_min_ms": 3000,
+    "random_interval_max_ms": 15000
+  },
+  "pet": {
+    "size": 200,
+    "regular_image": "images/pet_user_image.png",
+    "flying_image": "images/pet_flying.png"
+  }
+}
