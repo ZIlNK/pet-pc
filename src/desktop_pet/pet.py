@@ -11,6 +11,8 @@ from .utils import get_assets_path
 from .config_manager import ConfigManager, ActionManager, ActionConfig
 from .action_manager_gui import ActionManagerGUI
 from .pet_loader import PetLoader, PetPackage
+from .motion_controller import MotionModeController
+from .motion_control_panel import MotionControlPanel
 
 
 class DesktopPet(QWidget):
@@ -54,6 +56,8 @@ class DesktopPet(QWidget):
         self.walk_right_gif: QMovie | None = None
         self.hui_gif: QMovie | None = None
         self.idle_gif: QMovie | None = None
+
+        self.motion_controller = MotionModeController(self)
 
         self._load_current_pet()
         self.initUI()
@@ -284,31 +288,39 @@ class DesktopPet(QWidget):
         self.bubble_label.move(x_pos, y_pos)
         self.bubble_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.bubble_label.show()
-        
+
         self.state = PetState.REST_REMINDER
         self.movement_timer.stop()
-        
+
+        if self.motion_controller.get_mode() == "motion":
+            self.motion_controller.pause_motion()
+
         if self.current_gif and self.current_gif.state() == QMovie.MovieState.Running:
             self.current_gif.stop()
-        
+
         if self.hui_gif and self.hui_gif.isValid():
             self.label.setMovie(self.hui_gif)
             self.hui_gif.start()
             self.current_gif = self.hui_gif
 
     def bubble_clicked(self, event=None):
+        was_motion_mode = self.motion_controller.get_mode() == "motion"
+
         self.rest_timer.stop()
-        
+
         if self.current_gif and self.current_gif.state() == QMovie.MovieState.Running:
             self.current_gif.stop()
-        
+
         self.switch_to_static()
         self.state = PetState.IDLE
-        
+
         rest_config = self.config_manager.rest_reminder
         self.countdown_seconds = rest_config.countdown_seconds
         self.bubble_label.setText(f"休息倒计时: {self.countdown_seconds}")
         self.countdown_timer.start(1000)
+
+        if was_motion_mode:
+            self.motion_controller.resume_motion()
 
     def update_countdown(self):
         self.countdown_seconds -= 1
@@ -565,6 +577,26 @@ class DesktopPet(QWidget):
 
         context_menu.addSeparator()
 
+        motion_mode_menu = QMenu('运动模式', self)
+
+        current_mode = self.motion_controller.get_mode()
+        if current_mode == "random":
+            switch_to_motion_action = QAction('切换到运动模式', self)
+            switch_to_motion_action.triggered.connect(self._switch_to_motion_mode)
+            motion_mode_menu.addAction(switch_to_motion_action)
+        else:
+            switch_to_random_action = QAction('切换到随机模式', self)
+            switch_to_random_action.triggered.connect(self._switch_to_random_mode)
+            motion_mode_menu.addAction(switch_to_random_action)
+
+        open_control_panel_action = QAction('打开控制面板', self)
+        open_control_panel_action.triggered.connect(self._open_motion_control_panel)
+        motion_mode_menu.addAction(open_control_panel_action)
+
+        context_menu.addMenu(motion_mode_menu)
+
+        context_menu.addSeparator()
+
         action_manager_action = QAction('动作管理', self)
         action_manager_action.triggered.connect(self.open_action_manager)
         context_menu.addAction(action_manager_action)
@@ -642,8 +674,26 @@ class DesktopPet(QWidget):
         dialog = ActionManagerGUI(self.config_manager, self)
         dialog.exec()
 
+    def _switch_to_motion_mode(self):
+        self.motion_controller.set_mode("motion")
+
+    def _switch_to_random_mode(self):
+        self.motion_controller.set_mode("random")
+
+    def _open_motion_control_panel(self):
+        panel = MotionControlPanel(self, self)
+        panel.exec()
+
     def exit_app(self):
         QApplication.quit()
+
+    def _get_screen_geometry(self):
+        screen = QApplication.primaryScreen()
+        return screen.availableGeometry()
+
+    @property
+    def api(self):
+        return self.motion_controller
 
     def eventFilter(self, obj, event):
         if obj == self.bubble_label and event.type() == event.Type.MouseButtonPress:
@@ -727,6 +777,9 @@ class DesktopPet(QWidget):
 
     def random_move(self):
         if self.state != PetState.IDLE:
+            return
+
+        if self.motion_controller.get_mode() == "motion":
             return
 
         if not self.current_pet_package:

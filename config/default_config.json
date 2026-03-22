@@ -60,5 +60,11 @@
     "size": 200,
     "regular_image": "images/pet_user_image.png",
     "flying_image": "images/pet_flying.png"
+  },
+  "motion_mode": {
+    "enabled": true,
+    "default_mode": "random",
+    "movement_speed": 5,
+    "animation_wait": true
   }
 }

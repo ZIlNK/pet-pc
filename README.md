@@ -10,6 +10,7 @@
 - 🎯 惯性滑动和重力掉落效果
 - ⚙️ 可扩展的动作配置系统
 - 🎥 绿幕视频转透明GIF工具
+- 🎮 **运动模式** - 通过 API 控制桌宠的移动与动作
 
 ## 安装
 
@@ -48,7 +49,10 @@ desktop_pet/
 │   ├── pet.py               # 主程序
 │   ├── states.py            # 状态枚举
 │   ├── utils.py             # 工具函数
-│   └── config_manager.py    # 配置管理器
+│   ├── config_manager.py    # 配置管理器
+│   ├── motion_controller.py # 运动模式控制器
+│   ├── motion_listener.py   # 运动模式监听器
+│   └── motion_control_panel.py # 运动控制面板
 ├── assets/                  # 资源文件
 │   ├── images/              # 静态图片
 │   └── animations/          # 动画GIF
@@ -188,6 +192,82 @@ uv run python scripts/green_screen_to_gif.py input.mp4 -o assets/animations/wave
 | `type` | 动作类型：`animation`（动画）或 `movement`（移动） |
 | `animations` | 动画文件列表，可添加多个 |
 | `path` | 相对于 `assets` 目录的路径 |
+
+## 运动模式 API
+
+运动模式允许用户通过 API 直接控制桌宠的移动与动作，同时保留原有的随机动作功能。
+
+### 模式切换
+
+```python
+pet = DesktopPet()
+
+# 切换到运动模式（关闭随机动作）
+pet.api.set_mode("motion")
+
+# 切换回随机模式
+pet.api.set_mode("random")
+
+# 获取当前模式
+mode = pet.api.get_mode()  # "random" 或 "motion"
+```
+
+### 移动控制
+
+```python
+# 移动到指定坐标
+pet.api.move_to(500, 400)
+
+# 从当前位置移动指定偏移量
+pet.api.move_by(50, 0)   # 向右移动 50px
+pet.api.move_by(-50, 0)  # 向左移动 50px
+
+# 移动到屏幕边缘
+pet.api.move_to_edge("left")
+pet.api.move_to_edge("right")
+```
+
+### 动画控制
+
+```python
+# 播放指定动画
+pet.api.play_animation("sit")
+
+# 播放行走动画
+pet.api.play_walk("left")
+pet.api.play_walk("right")
+
+# 停止当前动画
+pet.api.stop_animation()
+```
+
+### 状态查询
+
+```python
+# 获取当前位置
+pos = pet.api.get_position()  # {"x": 500, "y": 400}
+
+# 获取当前状态
+state = pet.api.get_state()    # "idle", "motion_mode", "animating", ...
+
+# 获取可用的动画列表
+animations = pet.api.get_available_animations()  # ["sit", "walk", "read", ...]
+```
+
+### 右键菜单
+
+在桌宠上点击右键，可以找到「运动模式」菜单：
+- **切换到运动模式** / **切换到随机模式**
+- **打开控制面板** - 打开可视化控制面板
+
+### 控制面板功能
+
+运动控制面板提供以下 GUI 功能：
+- 模式切换按钮
+- 坐标显示与输入
+- 方向按钮移动
+- 动画列表与播放
+- 行走控制
 
 ## 依赖
 

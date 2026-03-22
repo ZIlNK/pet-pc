@@ -52,6 +52,14 @@ class AppConfig:
     current_pet: str = "default"
 
 
+@dataclass
+class MotionModeConfig:
+    enabled: bool = True
+    default_mode: str = "random"
+    movement_speed: int = 5
+    animation_wait: bool = True
+
+
 class ConfigManager:
     def __init__(self, config_dir: Path | None = None):
         if config_dir is None:
@@ -66,6 +74,7 @@ class ConfigManager:
         self._movement: MovementConfig | None = None
         self._pet: PetConfig | None = None
         self._app_config: AppConfig | None = None
+        self._motion_mode: MotionModeConfig | None = None
 
         self.load_config()
     
@@ -155,6 +164,14 @@ class ConfigManager:
         self._app_config = AppConfig(
             current_pet=app_data.get("current_pet", "default")
         )
+
+        motion_data = self._raw_config.get("motion_mode", {})
+        self._motion_mode = MotionModeConfig(
+            enabled=motion_data.get("enabled", True),
+            default_mode=motion_data.get("default_mode", "random"),
+            movement_speed=motion_data.get("movement_speed", 5),
+            animation_wait=motion_data.get("animation_wait", True)
+        )
     
     @property
     def actions(self) -> dict[str, ActionConfig]:
@@ -175,6 +192,10 @@ class ConfigManager:
     @property
     def app_config(self) -> AppConfig:
         return self._app_config
+
+    @property
+    def motion_mode(self) -> MotionModeConfig:
+        return self._motion_mode
 
     def get_current_pet_name(self) -> str:
         return self._app_config.current_pet

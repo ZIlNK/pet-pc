@@ -8,3 +8,5 @@ class PetState(Enum):
     INERTIA = "inertia"
     MOVING = "moving"
     REST_REMINDER = "rest_reminder"
+    MOTION_MODE = "motion_mode"
+    ANIMATING = "animating"
