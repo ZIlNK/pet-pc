@@ -336,3 +336,68 @@ curl -X POST http://localhost:8080/api/animation \
   "timestamp": "2024-01-15T10:30:00Z"
 }
 ```
+
+### 公网访问（内网穿透）
+
+如果需要从外网访问本地桌宠 API，可以使用 ngrok 等内网穿透工具。
+
+#### 安装 ngrok
+
+```bash
+# Windows 用 winget 安装
+winget install ngrok.ngrok
+```
+
+或直接下载：https://ngrok.com/download
+
+#### 配置 ngrok
+
+1. 访问 https://ngrok.com 注册免费账号
+2. 登录后进入 Dashboard → Your Authtoken
+3. 复制你的 token 并配置：
+
+```bash
+ngrok config add-authtoken <你的token>
+```
+
+#### 启动穿透
+
+1. 启动桌宠应用
+2. 右键桌宠 → 运动模式 → 启动 API 服务器
+3. 运行 ngrok：
+
+```bash
+ngrok http 8080
+```
+
+ngrok 会显示公网地址，例如：
+```
+Forwarding    https://xxxx-xxxx.ngrok-free.app -> http://localhost:8080
+```
+
+#### 配置 IP 白名单
+
+使用内网穿透时，服务器看到的请求 IP 是穿透服务的 IP，需要关闭 IP 白名单限制。
+
+编辑 `config/user_config.json`，将 `allowed_ips` 设为空数组：
+
+```json
+{
+  "api": {
+    "enabled": true,
+    "host": "0.0.0.0",
+    "port": 8080,
+    "allowed_ips": []
+  }
+}
+```
+
+#### 访问测试
+
+远程设备使用 ngrok 提供的 https 地址访问：
+
+```bash
+curl https://xxxx-xxxx.ngrok-free.app/api/status
+```
+
+> **注意**：关闭 IP 白名单后任何人都可以访问你的 API，建议仅用于测试环境，或考虑添加 API Key 验证。

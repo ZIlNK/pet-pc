@@ -1,7 +1,9 @@
 import asyncio
+import ipaddress
 import json
 from datetime import datetime
 from typing import Optional
+from urllib.parse import urlparse
 
 import aiohttp
 from aiohttp import web
@@ -82,15 +84,33 @@ class ApiServer:
         print("API 服务器已停止")
         return True
 
+    def _get_client_ip(self, request: Request) -> str:
+        """Get real client IP, considering proxy headers."""
+        # Check X-Forwarded-For header first (comma-separated, first is client)
+        forwarded_for = request.headers.get("X-Forwarded-For")
+        if forwarded_for:
+            return forwarded_for.split(",")[0].strip()
+
+        # Check X-Real-IP header
+        real_ip = request.headers.get("X-Real-IP")
+        if real_ip:
+            return real_ip
+
+        return request.remote or "unknown"
+
     def _setup_ip_filter(self) -> None:
         if self._app is None:
             return
 
         @web.middleware
         async def ip_filter_middleware(request: Request, handler):
-            client_ip = request.remote
-            if client_ip is None:
-                client_ip = request.client_ip if hasattr(request, 'client_ip') else "unknown"
+            # IP 白名单已禁用（使用 ngrok 等内网穿透时需要）
+            if not self._allowed_ips:
+                return await handler(request)
+
+            client_ip = self._get_client_ip(request)
+
+            print(f"[API] 请求来自 IP: {client_ip}, 白名单: {self._allowed_ips}")
 
             if client_ip not in self._allowed_ips:
                 print(f"拒绝访问: IP {client_ip} 不在白名单中")
@@ -120,22 +140,73 @@ class ApiServer:
         if self._app is None:
             return
 
-        async def cors_middleware(app, handler):
-            async def middleware(request):
-                if request.method == "OPTIONS":
-                    response = Response()
-                    response.headers["Access-Control-Allow-Origin"] = "*"
-                    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-                    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-                    return response
+        @web.middleware
+        async def cors_middleware(request: Request, handler):
+            if request.method == "OPTIONS":
+                response = web.Response()
+            else:
                 response = await handler(request)
-                response.headers["Access-Control-Allow-Origin"] = "*"
-                response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-                response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-                return response
-            return middleware
+
+            response.headers["Access-Control-Allow-Origin"] = "*"
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+            response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+            return response
 
         self._app.middlewares.append(cors_middleware)
+
+    def _validate_coordinates(self, data: dict) -> tuple[int, int] | None:
+        """Validate and sanitize coordinate values."""
+        try:
+            x = int(data.get("x", 0))
+            y = int(data.get("y", 0))
+
+            # Basic sanity check (negative coords allowed for off-screen moves)
+            if x < -10000 or x > 10000 or y < -10000 or y > 10000:
+                return None
+
+            return x, y
+        except (ValueError, TypeError):
+            return None
+
+    def _validate_delta(self, data: dict) -> tuple[int, int] | None:
+        """Validate movement delta values."""
+        try:
+            dx = int(data.get("dx", 0))
+            dy = int(data.get("dy", 0))
+            return dx, dy
+        except (ValueError, TypeError):
+            return None
+
+    def _is_safe_callback_url(self, url: str) -> bool:
+        """Check if callback URL is safe (no internal network access)."""
+        try:
+            parsed = urlparse(url)
+
+            # Only allow http/https
+            if parsed.scheme not in ("http", "https"):
+                return False
+
+            hostname = parsed.hostname
+            if not hostname:
+                return False
+
+            # Block private/internal IP ranges
+            try:
+                ip = ipaddress.ip_address(hostname)
+                if ip.is_private or ip.is_loopback or ip.is_link_local:
+                    return False
+            except ValueError:
+                # Not an IP address, could be a domain - allow for now
+                pass
+
+            # Block localhost variants
+            blocked_hosts = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+            if hostname.lower() in blocked_hosts:
+                return False
+
+            return True
+        except Exception:
+            return False
 
     async def handle_status(self, request: Request) -> Response:
         position = self._pet.api.get_position()
@@ -165,8 +236,11 @@ class ApiServer:
     async def handle_move(self, request: Request) -> Response:
         try:
             data = await request.json()
-            x = data.get("x", 0)
-            y = data.get("y", 0)
+            coords = self._validate_coordinates(data)
+            if coords is None:
+                return web.json_response({"success": False, "error": "Invalid coordinates"}, status=400)
+
+            x, y = coords
 
             if self._pet.api.get_mode() != "motion":
                 self._pet.api.set_mode("motion")
@@ -179,8 +253,11 @@ class ApiServer:
     async def handle_move_by(self, request: Request) -> Response:
         try:
             data = await request.json()
-            dx = data.get("dx", 0)
-            dy = data.get("dy", 0)
+            delta = self._validate_delta(data)
+            if delta is None:
+                return web.json_response({"success": False, "error": "Invalid delta values"}, status=400)
+
+            dx, dy = delta
 
             if self._pet.api.get_mode() != "motion":
                 self._pet.api.set_mode("motion")
@@ -221,7 +298,10 @@ class ApiServer:
             success = self._pet.api.play_animation(name)
 
             if success and callback_url:
-                asyncio.create_task(self._send_animation_callback(name, callback_url))
+                if not self._is_safe_callback_url(callback_url):
+                    print(f"警告: 回调URL不安全，已拒绝: {callback_url}")
+                else:
+                    asyncio.create_task(self._send_animation_callback(name, callback_url))
 
             return web.json_response({"success": success, "animation": name})
         except Exception as e:

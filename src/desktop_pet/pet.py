@@ -21,6 +21,7 @@ class DesktopPet(QWidget):
     def __init__(self):
         super().__init__()
 
+        self._api_loop = None
         self.assets_path = get_assets_path()
         self.config_manager = ConfigManager()
         self.action_manager = ActionManager(self.config_manager, self.assets_path)
@@ -797,10 +798,10 @@ class DesktopPet(QWidget):
             thread.start()
 
     def _run_api_server_async(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(self.api_server.start())
-        loop.run_forever()
+        self._api_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._api_loop)
+        self._api_loop.run_until_complete(self.api_server.start())
+        self._api_loop.run_forever()
 
     def _stop_api_server(self):
         if self.api_server.is_running:
@@ -809,11 +810,10 @@ class DesktopPet(QWidget):
             thread.start()
 
     def _run_api_server_stop_async(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.call_soon_threadsafe(self.api_server.stop)
-        loop.run_until_complete(asyncio.sleep(0.5))
-        loop.close()
+        if self._api_loop and self._api_loop.is_running():
+            self._api_loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(self.api_server.stop())
+            )
 
     def exit_app(self):
         QApplication.quit()
