@@ -197,6 +197,10 @@ class ConfigManager:
     def motion_mode(self) -> MotionModeConfig:
         return self._motion_mode
 
+    @property
+    def config(self) -> dict[str, Any]:
+        return self._raw_config
+
     def get_current_pet_name(self) -> str:
         return self._app_config.current_pet
 

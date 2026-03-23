@@ -10,7 +10,8 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
-from .config_manager import ConfigManager, ActionConfig, AnimationConfig
+from .config_manager import ConfigManager, AnimationConfig
+from .pet_loader import PetPackage, PetAction
 from .utils import get_assets_path
 
 
@@ -88,7 +89,7 @@ class AnimationEditDialog(QDialog):
 class ActionEditDialog(QDialog):
     """动作编辑对话框"""
 
-    def __init__(self, parent=None, action: Optional[ActionConfig] = None, existing_names: list = None):
+    def __init__(self, parent=None, action: Optional[PetAction] = None, existing_names: list = None):
         super().__init__(parent)
         self.action = action
         self.existing_names = existing_names or []
@@ -228,15 +229,14 @@ class ActionEditDialog(QDialog):
             return
 
         self.name_edit.setText(self.action.name)
-        self.type_combo.setCurrentText(self.action.action_type)
+        self.type_combo.setCurrentText(self.action.type)
         self.enabled_check.setChecked(self.action.enabled)
         self.weight_spin.setValue(self.action.weight)
-        self.desc_edit.setText(self.action.description)
 
-        if self.action.action_type == "animation":
-            self.animations = [AnimationConfig(a.path, a.width, a.height) for a in self.action.animations]
+        if self.action.type == "animation":
+            self.animations = [AnimationConfig(path=f, width=200, height=159) for f in self.action.animation_files]
             self.update_anim_list()
-        elif self.action.action_type == "movement":
+        elif self.action.type == "movement":
             config = self.action.config
             self.min_dist_spin.setValue(config.get("min_distance", 30))
             self.max_dist_spin.setValue(config.get("max_distance", 100))
@@ -258,7 +258,7 @@ class ActionEditDialog(QDialog):
 
         self.accept()
 
-    def get_action(self) -> ActionConfig:
+    def get_action(self) -> PetAction:
         name = self.name_edit.text().strip()
         action_type = self.type_combo.currentText()
 
@@ -269,23 +269,25 @@ class ActionEditDialog(QDialog):
                 "max_distance": self.max_dist_spin.value()
             }
 
-        return ActionConfig(
+        animation_files = [a.path for a in self.animations]
+
+        return PetAction(
             name=name,
-            enabled=self.enabled_check.isChecked(),
+            type=action_type,
             weight=self.weight_spin.value(),
-            action_type=action_type,
-            description=self.desc_edit.text().strip(),
-            config=config,
-            animations=[AnimationConfig(a.path, a.width, a.height) for a in self.animations]
+            animation_files=animation_files,
+            enabled=self.enabled_check.isChecked(),
+            config=config
         )
 
 
 class ActionManagerGUI(QDialog):
     """动作管理器主窗口"""
 
-    def __init__(self, config_manager: ConfigManager, parent=None):
+    def __init__(self, config_manager: ConfigManager, pet_package: PetPackage, parent=None):
         super().__init__(parent)
         self.config_manager = config_manager
+        self.pet_package = pet_package
         self.setWindowTitle("动作管理器")
         self.setMinimumWidth(700)
         self.setMinimumHeight(500)
@@ -347,19 +349,21 @@ class ActionManagerGUI(QDialog):
 
     def refresh_action_list(self):
         self.action_table.setRowCount(0)
-        actions = self.config_manager.actions
+        if not self.pet_package:
+            return
+        actions = self.pet_package.actions
 
-        for name, action in actions.items():
+        for action in actions:
             row = self.action_table.rowCount()
             self.action_table.insertRow(row)
 
             name_item = QTableWidgetItem(action.name)
             self.action_table.setItem(row, 0, name_item)
 
-            type_item = QTableWidgetItem(action.action_type)
+            type_item = QTableWidgetItem(action.type)
             self.action_table.setItem(row, 1, type_item)
 
-            desc_item = QTableWidgetItem(action.description)
+            desc_item = QTableWidgetItem("")
             self.action_table.setItem(row, 2, desc_item)
 
             weight_item = QTableWidgetItem(str(action.weight))
@@ -377,12 +381,12 @@ class ActionManagerGUI(QDialog):
         return self.action_table.item(row, 0).text()
 
     def add_action(self):
-        existing_names = list(self.config_manager.actions.keys())
+        existing_names = [a.name for a in self.pet_package.actions]
         dialog = ActionEditDialog(self, existing_names=existing_names)
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
             action = dialog.get_action()
-            self.config_manager._actions[action.name] = action
+            self.pet_package.actions.append(action)
             self.refresh_action_list()
 
     def edit_selected_action(self):
@@ -391,18 +395,19 @@ class ActionManagerGUI(QDialog):
             QMessageBox.warning(self, "警告", "请先选择一个动作")
             return
 
-        action = self.config_manager.actions.get(name)
+        action = next((a for a in self.pet_package.actions if a.name == name), None)
         if not action:
             return
 
-        existing_names = [n for n in self.config_manager.actions.keys() if n != name]
+        existing_names = [a.name for a in self.pet_package.actions if a.name != name]
         dialog = ActionEditDialog(self, action, existing_names)
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
             new_action = dialog.get_action()
-            if new_action.name != name:
-                del self.config_manager._actions[name]
-            self.config_manager._actions[new_action.name] = new_action
+            for i, a in enumerate(self.pet_package.actions):
+                if a.name == name:
+                    self.pet_package.actions[i] = new_action
+                    break
             self.refresh_action_list()
 
     def delete_selected_action(self):
@@ -418,15 +423,31 @@ class ActionManagerGUI(QDialog):
         )
 
         if reply == QMessageBox.StandardButton.Yes:
-            del self.config_manager._actions[name]
+            self.pet_package.actions = [a for a in self.pet_package.actions if a.name != name]
             self.refresh_action_list()
 
     def save_config(self):
         try:
-            self.config_manager.save_user_config()
+            import json
+            actions_path = self.pet_package.config_dir / "actions.json"
+            actions_data = {
+                "actions": [
+                    {
+                        "name": a.name,
+                        "type": a.type,
+                        "weight": a.weight,
+                        "animation_files": a.animation_files,
+                        "enabled": a.enabled,
+                        "config": a.config
+                    }
+                    for a in self.pet_package.actions
+                ]
+            }
+            with open(actions_path, "w", encoding="utf-8") as f:
+                json.dump(actions_data, f, ensure_ascii=False, indent=2)
             QMessageBox.information(
                 self, "保存成功",
-                "配置已保存到 user_config.json\n请重启桌面宠物以应用更改。"
+                f"配置已保存到 {actions_path}\n请重启桌面宠物以应用更改。"
             )
         except Exception as e:
             QMessageBox.critical(self, "保存失败", f"保存配置时出错：{str(e)}")

@@ -1,5 +1,6 @@
 import sys
 import random
+import asyncio
 from pathlib import Path
 from PyQt6.QtWidgets import QApplication, QLabel, QWidget, QMenu
 from PyQt6.QtGui import QPixmap, QMovie, QAction
@@ -13,6 +14,7 @@ from .action_manager_gui import ActionManagerGUI
 from .pet_loader import PetLoader, PetPackage
 from .motion_controller import MotionModeController
 from .motion_control_panel import MotionControlPanel
+from .api_server import ApiServer
 
 
 class DesktopPet(QWidget):
@@ -58,6 +60,22 @@ class DesktopPet(QWidget):
         self.idle_gif: QMovie | None = None
 
         self.motion_controller = MotionModeController(self)
+        self.motion_controller.move_to_requested.connect(self._on_move_to_requested)
+        self.motion_controller.move_by_requested.connect(self._on_move_by_requested)
+        self.motion_controller.move_to_edge_requested.connect(self._on_move_to_edge_requested)
+        self.motion_controller.play_animation_requested.connect(self._on_play_animation_requested)
+        self.motion_controller.play_walk_requested.connect(self._on_play_walk_requested)
+        self.motion_controller.stop_animation_requested.connect(self._on_stop_animation_requested)
+        self.motion_controller.set_mode_requested.connect(self._on_set_mode_requested)
+
+        self.api_server = ApiServer(self)
+        api_config = self.config_manager.config.get("api", {})
+        if api_config.get("enabled", False):
+            host = api_config.get("host", "0.0.0.0")
+            port = api_config.get("port", 8080)
+            allowed_ips = api_config.get("allowed_ips", ["127.0.0.1", "::1"])
+            self.api_server.configure(host, port)
+            self.api_server.set_allowed_ips(allowed_ips)
 
         self._load_current_pet()
         self.initUI()
@@ -593,6 +611,17 @@ class DesktopPet(QWidget):
         open_control_panel_action.triggered.connect(self._open_motion_control_panel)
         motion_mode_menu.addAction(open_control_panel_action)
 
+        motion_mode_menu.addSeparator()
+
+        if self.api_server.is_running:
+            stop_api_action = QAction('停止 API 服务器', self)
+            stop_api_action.triggered.connect(self._stop_api_server)
+            motion_mode_menu.addAction(stop_api_action)
+        else:
+            start_api_action = QAction('启动 API 服务器', self)
+            start_api_action.triggered.connect(self._start_api_server)
+            motion_mode_menu.addAction(start_api_action)
+
         context_menu.addMenu(motion_mode_menu)
 
         context_menu.addSeparator()
@@ -671,7 +700,7 @@ class DesktopPet(QWidget):
         print(f"已切换到桌宠: {pet_package.meta.name}")
 
     def open_action_manager(self):
-        dialog = ActionManagerGUI(self.config_manager, self)
+        dialog = ActionManagerGUI(self.config_manager, self.current_pet_package, self)
         dialog.exec()
 
     def _switch_to_motion_mode(self):
@@ -680,9 +709,111 @@ class DesktopPet(QWidget):
     def _switch_to_random_mode(self):
         self.motion_controller.set_mode("random")
 
+    def _on_set_mode_requested(self, mode: str):
+        old_mode = self.motion_controller._mode
+        self.motion_controller._mode = mode
+
+        if mode == "random":
+            self.movement_timer.stop()
+            if self.current_gif and self.current_gif.state() == 1:
+                self.current_gif.stop()
+            self.switch_to_static()
+            self.state = PetState.IDLE
+            self.start_random_movement_timer()
+        else:
+            self.movement_timer.stop()
+            self.state = PetState.MOTION_MODE
+
+    def _on_move_to_requested(self, x: int, y: int):
+        screen = self._get_screen_geometry()
+        pet_width = self.width()
+        pet_height = self.height()
+
+        x = max(0, min(x, screen.width() - pet_width))
+        y = max(0, min(y, screen.height() - pet_height))
+
+        current_x = self.x()
+        current_y = self.y()
+
+        if x < current_x:
+            self.switch_to_gif('left')
+        elif x > current_x:
+            self.switch_to_gif('right')
+
+        self.start_smooth_move(current_x, x, y)
+
+    def _on_move_by_requested(self, dx: int, dy: int):
+        current_x = self.x()
+        current_y = self.y()
+        self._on_move_to_requested(current_x + dx, current_y + dy)
+
+    def _on_move_to_edge_requested(self, edge: str):
+        screen = self._get_screen_geometry()
+        pet_width = self.width()
+        current_y = self.y()
+
+        if edge == "left":
+            self._on_move_to_requested(0, current_y)
+        elif edge == "right":
+            self._on_move_to_requested(screen.width() - pet_width, current_y)
+
+    def _on_play_animation_requested(self, name: str):
+        action = self.current_pet_package.actions if self.current_pet_package else []
+        found_action = None
+        for a in action:
+            if a.name == name:
+                found_action = a
+                break
+        if found_action:
+            self.play_animation_action(found_action)
+
+    def _on_play_walk_requested(self, direction: str):
+        screen = self._get_screen_geometry()
+        current_x = self.x()
+        pet_width = self.width()
+
+        if direction == "left":
+            target_x = 0
+        else:
+            target_x = screen.width() - pet_width
+
+        self.switch_to_gif(direction)
+        self.start_smooth_move(current_x, target_x, self.y())
+
+    def _on_stop_animation_requested(self):
+        if self.current_gif and self.current_gif.state() == 1:
+            self.current_gif.stop()
+        self.switch_to_static()
+        self.state = PetState.MOTION_MODE
+
     def _open_motion_control_panel(self):
         panel = MotionControlPanel(self, self)
         panel.exec()
+
+    def _start_api_server(self):
+        if not self.api_server.is_running:
+            import threading
+            thread = threading.Thread(target=self._run_api_server_async, daemon=True)
+            thread.start()
+
+    def _run_api_server_async(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(self.api_server.start())
+        loop.run_forever()
+
+    def _stop_api_server(self):
+        if self.api_server.is_running:
+            import threading
+            thread = threading.Thread(target=self._run_api_server_stop_async, daemon=True)
+            thread.start()
+
+    def _run_api_server_stop_async(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.call_soon_threadsafe(self.api_server.stop)
+        loop.run_until_complete(asyncio.sleep(0.5))
+        loop.close()
 
     def exit_app(self):
         QApplication.quit()

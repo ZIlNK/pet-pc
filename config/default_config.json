@@ -66,5 +66,11 @@
     "default_mode": "random",
     "movement_speed": 5,
     "animation_wait": true
+  },
+  "api": {
+    "enabled": true,
+    "host": "0.0.0.0",
+    "port": 8080,
+    "allowed_ips": ["127.0.0.1", "::1"]
   }
 }

@@ -11,6 +11,13 @@ class MotionModeController(QObject):
     movement_finished = pyqtSignal(tuple)
     animation_started = pyqtSignal(str)
     animation_finished = pyqtSignal(str)
+    move_to_requested = pyqtSignal(int, int)
+    move_by_requested = pyqtSignal(int, int)
+    move_to_edge_requested = pyqtSignal(str)
+    play_animation_requested = pyqtSignal(str)
+    play_walk_requested = pyqtSignal(str)
+    stop_animation_requested = pyqtSignal()
+    set_mode_requested = pyqtSignal(str)
 
     def __init__(self, pet):
         super().__init__()
@@ -30,22 +37,9 @@ class MotionModeController(QObject):
         if self._mode == mode:
             return True
 
-        old_mode = self._mode
-        self._mode = mode
-
-        if mode == "random":
-            self._pet.movement_timer.stop()
-            if self._pet.current_gif and self._pet.current_gif.state() == 1:
-                self._pet.current_gif.stop()
-            self._pet.switch_to_static()
-            self._pet.state = self._pet.state.IDLE
-            self._pet.start_random_movement_timer()
-        else:
-            self._pet.movement_timer.stop()
-            self._pet.state = self._pet.state.MOTION_MODE
-
-        self._notify_mode_changed(old_mode, mode)
-        self.mode_changed.emit(old_mode, mode)
+        self._notify_mode_changed(self._mode, mode)
+        self.mode_changed.emit(self._mode, mode)
+        self.set_mode_requested.emit(mode)
         return True
 
     def get_mode(self) -> str:
@@ -55,46 +49,22 @@ class MotionModeController(QObject):
         if self._mode != "motion":
             return False
 
-        screen = self._pet._get_screen_geometry()
-        pet_width = self._pet.width()
-        pet_height = self._pet.height()
-
-        x = max(0, min(x, screen.width() - pet_width))
-        y = max(0, min(y, screen.height() - pet_height))
-
-        current_x = self._pet.x()
-        current_y = self._pet.y()
-
-        if x < current_x:
-            self._pet.switch_to_gif('left')
-        elif x > current_x:
-            self._pet.switch_to_gif('right')
-
-        self._pet.start_smooth_move(current_x, x, y)
+        self.move_to_requested.emit(x, y)
         return True
 
     def move_by(self, dx: int, dy: int) -> bool:
         if self._mode != "motion":
             return False
 
-        current_x = self._pet.x()
-        current_y = self._pet.y()
-
-        return self.move_to(current_x + dx, current_y + dy)
+        self.move_by_requested.emit(dx, dy)
+        return True
 
     def move_to_edge(self, edge: str) -> bool:
         if self._mode != "motion":
             return False
 
-        screen = self._pet._get_screen_geometry()
-        pet_width = self._pet.width()
-        current_y = self._pet.y()
-
-        if edge == "left":
-            return self.move_to(0, current_y)
-        elif edge == "right":
-            return self.move_to(screen.width() - pet_width, current_y)
-        return False
+        self.move_to_edge_requested.emit(edge)
+        return True
 
     def play_animation(self, name: str) -> bool:
         if self._mode != "motion":
@@ -110,9 +80,9 @@ class MotionModeController(QObject):
         if not found_action:
             return False
 
-        self._pet.play_animation_action(found_action)
         self._notify_animation_started(name)
         self.animation_started.emit(name)
+        self.play_animation_requested.emit(name)
         return True
 
     def play_walk(self, direction: str) -> bool:
@@ -122,27 +92,14 @@ class MotionModeController(QObject):
         if direction not in ("left", "right"):
             return False
 
-        screen = self._pet._get_screen_geometry()
-        current_x = self._pet.x()
-        pet_width = self._pet.width()
-
-        if direction == "left":
-            target_x = 0
-        else:
-            target_x = screen.width() - pet_width
-
-        self._pet.switch_to_gif(direction)
-        self._pet.start_smooth_move(current_x, target_x, self._pet.y())
+        self.play_walk_requested.emit(direction)
         return True
 
     def stop_animation(self) -> bool:
         if self._mode != "motion":
             return False
 
-        if self._pet.current_gif and self._pet.current_gif.state() == 1:
-            self._pet.current_gif.stop()
-        self._pet.switch_to_static()
-        self._pet.state = self._pet.state.MOTION_MODE
+        self.stop_animation_requested.emit()
         return True
 
     def get_position(self) -> dict:

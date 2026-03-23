@@ -279,3 +279,60 @@ animations = pet.api.get_available_animations()  # ["sit", "walk", "read", ...]
 ### 开发依赖（可选）
 - opencv-python
 - numpy
+
+## HTTP API 远程控制
+
+### 启动 API 服务器
+在桌宠上点击右键 -> 运动模式 -> 启动 API 服务器
+
+### IP 白名单
+
+API 服务器默认只允许本地访问（`127.0.0.1` 和 `::1`）。如需允许其他设备访问，请在配置文件中添加 IP 白名单：
+
+```json
+{
+  "api": {
+    "enabled": true,
+    "host": "0.0.0.0",
+    "port": 8080,
+    "allowed_ips": ["127.0.0.1", "::1", "192.168.1.100"]
+  }
+}
+```
+
+- `allowed_ips`: 允许访问 API 的 IP 地址列表
+- 默认只允许本地访问，拒绝其他 IP 的请求
+
+### API Endpoints
+
+| Method | Endpoint | Description | Request Body |
+|--------|----------|-------------|--------------|
+| GET | `/api/status` | 获取桌宠状态 | - |
+| POST | `/api/mode` | 设置模式 | `{"mode": "motion"}` |
+| POST | `/api/move` | 移动到坐标 | `{"x": 100, "y": 200}` |
+| POST | `/api/move_by` | 相对移动 | `{"dx": 50, "dy": 0}` |
+| POST | `/api/move_edge` | 移动到边缘 | `{"edge": "left"}` |
+| POST | `/api/animation` | 播放动画(带回调) | `{"name": "sit", "callback_url": "http://..."}` |
+| POST | `/api/walk` | 行走动画 | `{"direction": "left"}` |
+| GET | `/api/animations` | 获取可用动画列表 | - |
+
+### 动画完成回调 (Webhook)
+
+当使用 `POST /api/animation` 并提供 `callback_url` 参数时，动画播放完成后系统会自动向该 URL 发送 POST 请求通知。
+
+**请求示例：**
+```bash
+curl -X POST http://localhost:8080/api/animation \
+  -H "Content-Type: application/json" \
+  -d '{"name": "sit", "callback_url": "http://your-server/callback"}'
+```
+
+**回调 Payload：**
+```json
+{
+  "event": "animation_completed",
+  "animation": "sit",
+  "position": {"x": 100, "y": 200},
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```

@@ -49,7 +49,7 @@ uv.lock
 # Build outputs (huge compiled binaries)
 target/
 node_modules/
-pets/default/
+pets/
 checklist.md
 SPEC.md
 tasks.md
