@@ -102,5 +102,26 @@
     "host": "0.0.0.0",
     "port": 8080,
     "allowed_ips": []
+  },
+  "click_detection": {
+    "enabled": true,
+    "zones": [
+      {
+        "name": "1",
+        "x": 0.2466666666666667,
+        "y": 0.0419287211740036,
+        "width": 0.54,
+        "height": 0.58,
+        "action": "read"
+      },
+      {
+        "name": "2",
+        "x": 0.31,
+        "y": 0.67,
+        "width": 0.39,
+        "height": 0.3,
+        "action": "eat"
+      }
+    ]
   }
 }

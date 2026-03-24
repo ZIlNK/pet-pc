@@ -1,9 +1,11 @@
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QListWidget, QGroupBox, QFormLayout,
-    QLineEdit, QSpinBox, QComboBox, QMessageBox
+    QLineEdit, QSpinBox, QComboBox, QMessageBox, QCheckBox
 )
 from PyQt6.QtCore import Qt
+
+from .click_zone_dialog import ClickZoneConfigDialog
 
 
 class MotionControlPanel(QDialog):
@@ -16,6 +18,7 @@ class MotionControlPanel(QDialog):
         self.setup_ui()
         self.refresh_animations()
         self.update_position_display()
+        self.refresh_click_detection_state()
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
@@ -128,6 +131,19 @@ class MotionControlPanel(QDialog):
 
         layout.addWidget(walk_group)
 
+        click_detection_group = QGroupBox("点击检测")
+        click_detection_layout = QHBoxLayout(click_detection_group)
+
+        self.click_detection_checkbox = QCheckBox("启用点击检测")
+        self.click_detection_checkbox.stateChanged.connect(self.on_click_detection_changed)
+        click_detection_layout.addWidget(self.click_detection_checkbox)
+
+        self.config_zones_btn = QPushButton("配置点击区域")
+        self.config_zones_btn.clicked.connect(self.on_config_zones_clicked)
+        click_detection_layout.addWidget(self.config_zones_btn)
+
+        layout.addWidget(click_detection_group)
+
         self.refresh_btn = QPushButton("刷新")
         self.refresh_btn.clicked.connect(self.refresh_all)
         layout.addWidget(self.refresh_btn)
@@ -194,3 +210,20 @@ class MotionControlPanel(QDialog):
             QMessageBox.warning(self, "警告", "请先切换到运动模式")
             return
         self.motion_controller.play_walk(direction)
+
+    def on_click_detection_changed(self, state):
+        enabled = state == Qt.CheckState.Checked.value
+        self.pet.set_click_detection_enabled(enabled)
+        self.pet.config_manager.set_click_detection_enabled(enabled)
+        self.pet.config_manager.save_config()
+
+    def on_config_zones_clicked(self):
+        dialog = ClickZoneConfigDialog(self.pet.current_pet_package, self.pet.config_manager, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            zones = dialog.get_zones()
+            self.pet.set_click_zones(zones)
+            dialog.save_to_pet_package()
+
+    def refresh_click_detection_state(self):
+        enabled = self.pet.config_manager.get_click_detection_enabled()
+        self.click_detection_checkbox.setChecked(enabled)

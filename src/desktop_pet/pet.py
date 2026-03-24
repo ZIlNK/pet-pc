@@ -9,7 +9,7 @@ from PIL import Image
 
 from .states import PetState
 from .utils import get_assets_path
-from .config_manager import ConfigManager, ActionManager, ActionConfig
+from .config_manager import ConfigManager, ActionManager, ActionConfig, ClickZoneConfig
 from .action_manager_gui import ActionManagerGUI
 from .pet_loader import PetLoader, PetPackage
 from .motion_controller import MotionModeController
@@ -53,6 +53,21 @@ class DesktopPet(QWidget):
         if rest_config.enabled:
             self.rest_timer.start(rest_config.interval_minutes * 60 * 1000)
         self.rest_timer_display.start(1000)
+
+        self._click_detection_enabled = False
+        self._click_zones: list[ClickZoneConfig] = []
+        click_detection_config = self.config_manager.config.get("click_detection", {})
+        self._click_detection_enabled = click_detection_config.get("enabled", False)
+        click_zones_data = click_detection_config.get("zones", [])
+        for zone_data in click_zones_data:
+            self._click_zones.append(ClickZoneConfig(
+                name=zone_data.get("name", ""),
+                x=zone_data.get("x", 0.0),
+                y=zone_data.get("y", 0.0),
+                width=zone_data.get("width", 0.0),
+                height=zone_data.get("height", 0.0),
+                action=zone_data.get("action", "")
+            ))
 
         self.current_gif: QMovie | None = None
         self.walk_left_gif: QMovie | None = None
@@ -134,6 +149,33 @@ class DesktopPet(QWidget):
                             self.walk_right_gif.setScaledSize(QSize(200, 159))
                         except Exception as e:
                             print(f"Failed to load walk_right animation: {e}")
+
+    def _detect_click_zone(self, x: float, y: float) -> str | None:
+        for zone in self._click_zones:
+            if (zone.x <= x <= zone.x + zone.width and
+                zone.y <= y <= zone.y + zone.height):
+                return zone.name
+        return None
+
+    def _play_zone_animation(self, zone_name: str) -> None:
+        for zone in self._click_zones:
+            if zone.name == zone_name:
+                self.play_animation_action_by_name(zone.action)
+                return
+
+    def play_animation_action_by_name(self, action_name: str) -> None:
+        if not self.current_pet_package:
+            return
+        for action in self.current_pet_package.actions:
+            if action.name == action_name:
+                self.play_animation_action(action)
+                return
+
+    def set_click_detection_enabled(self, enabled: bool) -> None:
+        self._click_detection_enabled = enabled
+
+    def set_click_zones(self, zones: list[ClickZoneConfig]) -> None:
+        self._click_zones = zones
 
     def initUI(self):
         self.setWindowFlags(
@@ -526,6 +568,7 @@ class DesktopPet(QWidget):
             self.drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             self.previous_pos = event.globalPosition().toPoint()
             self.state = PetState.DRAGGING
+            self._press_time = event.timestamp()
             if hasattr(self, 'inertia_timer') and self.inertia_timer:
                 self.inertia_timer.stop()
             event.accept()
@@ -567,10 +610,25 @@ class DesktopPet(QWidget):
             self.is_dragging = False
             self.state = PetState.INERTIA
 
+            press_time = getattr(self, '_press_time', 0)
+            release_time = event.timestamp()
+            click_duration = release_time - press_time
+            is_click = click_duration < 200
+
             current_pos = event.globalPosition().toPoint()
             pos_diff = current_pos - self.previous_pos
             velocity_x = pos_diff.x() / 2
             velocity_y = pos_diff.y() / 2
+
+            if is_click and self._click_detection_enabled:
+                pet_pos = self.frameGeometry().topLeft()
+                click_x = (current_pos.x() - pet_pos.x()) / self.width()
+                click_y = (current_pos.y() - pet_pos.y()) / self.height()
+                zone_name = self._detect_click_zone(click_x, click_y)
+                if zone_name:
+                    self._play_zone_animation(zone_name)
+                    event.accept()
+                    return
 
             self.start_inertia(velocity_x, velocity_y)
 

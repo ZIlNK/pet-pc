@@ -60,6 +60,22 @@ class MotionModeConfig:
     animation_wait: bool = True
 
 
+@dataclass
+class ClickZoneConfig:
+    name: str
+    x: float
+    y: float
+    width: float
+    height: float
+    action: str
+
+
+@dataclass
+class ClickDetectionConfig:
+    enabled: bool = False
+    zones: list[ClickZoneConfig] = field(default_factory=list)
+
+
 class ConfigManager:
     def __init__(self, config_dir: Path | None = None):
         if config_dir is None:
@@ -75,6 +91,7 @@ class ConfigManager:
         self._pet: PetConfig | None = None
         self._app_config: AppConfig | None = None
         self._motion_mode: MotionModeConfig | None = None
+        self._click_detection: ClickDetectionConfig | None = None
 
         self.load_config()
     
@@ -172,6 +189,22 @@ class ConfigManager:
             movement_speed=motion_data.get("movement_speed", 5),
             animation_wait=motion_data.get("animation_wait", True)
         )
+
+        click_data = self._raw_config.get("click_detection", {})
+        click_zones = []
+        for zone_data in click_data.get("zones", []):
+            click_zones.append(ClickZoneConfig(
+                name=zone_data.get("name", ""),
+                x=zone_data.get("x", 0.0),
+                y=zone_data.get("y", 0.0),
+                width=zone_data.get("width", 0.0),
+                height=zone_data.get("height", 0.0),
+                action=zone_data.get("action", "")
+            ))
+        self._click_detection = ClickDetectionConfig(
+            enabled=click_data.get("enabled", False),
+            zones=click_zones
+        )
     
     @property
     def actions(self) -> dict[str, ActionConfig]:
@@ -196,6 +229,10 @@ class ConfigManager:
     @property
     def motion_mode(self) -> MotionModeConfig:
         return self._motion_mode
+
+    @property
+    def click_detection(self) -> ClickDetectionConfig:
+        return self._click_detection
 
     @property
     def config(self) -> dict[str, Any]:
@@ -281,6 +318,44 @@ class ConfigManager:
 
         with open(self.user_config_path, "w", encoding="utf-8") as f:
             json.dump(user_config, f, ensure_ascii=False, indent=2)
+
+    def get_click_detection_enabled(self) -> bool:
+        if self._click_detection:
+            return self._click_detection.enabled
+        return False
+
+    def set_click_detection_enabled(self, enabled: bool) -> None:
+        if self._click_detection:
+            self._click_detection.enabled = enabled
+        else:
+            self._click_detection = ClickDetectionConfig(enabled=enabled, zones=[])
+
+    def save_config(self) -> None:
+        existing_config = {}
+        if self.user_config_path.exists():
+            try:
+                with open(self.user_config_path, "r", encoding="utf-8") as f:
+                    existing_config = json.load(f)
+            except (json.JSONDecodeError, IOError):
+                pass
+
+        existing_config["click_detection"] = {
+            "enabled": self.get_click_detection_enabled(),
+            "zones": [
+                {
+                    "name": zone.name,
+                    "x": zone.x,
+                    "y": zone.y,
+                    "width": zone.width,
+                    "height": zone.height,
+                    "action": zone.action
+                }
+                for zone in (self._click_detection.zones if self._click_detection else [])
+            ]
+        }
+
+        with open(self.user_config_path, "w", encoding="utf-8") as f:
+            json.dump(existing_config, f, ensure_ascii=False, indent=2)
 
 
 class ActionManager:

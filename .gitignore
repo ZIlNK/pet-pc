@@ -33,6 +33,7 @@ env/
 *.swp
 *.swo
 *~
+.cluade/
 
 # OS
 .DS_Store
@@ -53,3 +54,5 @@ pets/
 checklist.md
 SPEC.md
 tasks.md
+CLAUDE.md
+pet-pc-api-review.md

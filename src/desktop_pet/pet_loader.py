@@ -24,6 +24,7 @@ class PetAction:
     animation_files: list[str] = field(default_factory=list)
     enabled: bool = True
     config: dict[str, Any] = field(default_factory=dict)
+    zone_actions: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -141,7 +142,8 @@ class PetLoader:
                         weight=action_data.get("weight", 1),
                         animation_files=action_data.get("animation_files", []),
                         enabled=action_data.get("enabled", True),
-                        config=action_data.get("config", {})
+                        config=action_data.get("config", {}),
+                        zone_actions=action_data.get("zone_actions", {})
                     )
                     actions.append(action)
         except (json.JSONDecodeError, IOError):
