@@ -1,57 +1,87 @@
+import json
+import shutil
 from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
-    QLineEdit, QSpinBox, QCheckBox, QComboBox, QTextEdit,
+    QLineEdit, QSpinBox, QCheckBox, QComboBox,
     QListWidget, QListWidgetItem, QFileDialog, QGroupBox,
-    QFormLayout, QDialogButtonBox, QWidget, QAbstractItemView
+    QFormLayout, QDialogButtonBox, QAbstractItemView
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtGui import QPixmap, QMovie
 
-from .config_manager import ConfigManager, AnimationConfig
+from .config_manager import ConfigManager
 from .pet_loader import PetPackage, PetAction
-from .utils import get_assets_path
 
 
-class AnimationEditDialog(QDialog):
-    """动画编辑对话框"""
+class AnimationSelectDialog(QDialog):
+    """动画文件选择对话框 - 支持导入和选择"""
 
-    def __init__(self, parent=None, animation: Optional[AnimationConfig] = None):
+    def __init__(self, pet_package: PetPackage, parent=None, selected_files: list[str] = None):
         super().__init__(parent)
-        self.animation = animation
-        self.setWindowTitle("编辑动画" if animation else "添加动画")
-        self.setMinimumWidth(400)
+        self.pet_package = pet_package
+        self.selected_files = selected_files or []
+        self.imported_files: list[str] = []  # 记录本次导入的文件
+        self._current_movie: Optional[QMovie] = None  # 保持 GIF 动画引用
+        self.setWindowTitle("选择动画文件")
+        self.setMinimumSize(600, 450)
         self.setup_ui()
-        if animation:
-            self.load_data()
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
 
-        form_layout = QFormLayout()
+        # 顶部按钮区
+        btn_layout = QHBoxLayout()
+        import_btn = QPushButton("📁 从文件导入...")
+        import_btn.clicked.connect(self.import_files)
+        btn_layout.addWidget(import_btn)
 
-        self.path_edit = QLineEdit()
-        self.path_edit.setPlaceholderText("animations/your_animation/your_animation.gif")
-        form_layout.addRow("路径:", self.path_edit)
+        refresh_btn = QPushButton("🔄 刷新列表")
+        refresh_btn.clicked.connect(self.load_animation_files)
+        btn_layout.addWidget(refresh_btn)
 
-        browse_btn = QPushButton("浏览...")
-        browse_btn.clicked.connect(self.browse_file)
-        form_layout.addRow("", browse_btn)
+        btn_layout.addStretch()
 
-        self.width_spin = QSpinBox()
-        self.width_spin.setRange(1, 1000)
-        self.width_spin.setValue(200)
-        form_layout.addRow("宽度:", self.width_spin)
+        # 提示信息
+        info_label = QLabel("提示：点击「从文件导入」可添加外部动画文件，将自动复制到宠物包")
+        info_label.setStyleSheet("color: gray; font-size: 11px;")
+        btn_layout.addWidget(info_label)
 
-        self.height_spin = QSpinBox()
-        self.height_spin.setRange(1, 1000)
-        self.height_spin.setValue(159)
-        form_layout.addRow("高度:", self.height_spin)
+        layout.addLayout(btn_layout)
 
-        layout.addLayout(form_layout)
+        # 主内容区
+        content_layout = QHBoxLayout()
 
+        # 左侧：文件列表（支持多选）
+        list_group = QGroupBox("宠物包内的动画文件")
+        list_layout = QVBoxLayout(list_group)
+        self.file_list = QListWidget()
+        self.file_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        self.load_animation_files()
+        list_layout.addWidget(self.file_list)
+        content_layout.addWidget(list_group, stretch=1)
+
+        # 右侧：预览区域
+        preview_group = QGroupBox("预览")
+        preview_layout = QVBoxLayout(preview_group)
+        self.preview_label = QLabel("选择文件查看预览")
+        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_label.setMinimumSize(200, 200)
+        self.preview_label.setStyleSheet("background-color: #333; color: white;")
+        preview_layout.addWidget(self.preview_label)
+
+        self.file_info_label = QLabel("")
+        self.file_info_label.setStyleSheet("color: gray; font-size: 10px;")
+        self.file_info_label.setWordWrap(True)
+        preview_layout.addWidget(self.file_info_label)
+        content_layout.addWidget(preview_group, stretch=1)
+
+        layout.addLayout(content_layout)
+
+        # 按钮
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
@@ -59,44 +89,142 @@ class AnimationEditDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def browse_file(self):
-        assets_path = get_assets_path()
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择动画文件", str(assets_path),
-            "GIF文件 (*.gif);;所有文件 (*.*)"
+        # 连接信号
+        self.file_list.itemSelectionChanged.connect(self.on_selection_changed)
+
+    def load_animation_files(self):
+        """从宠物包的 animations 目录加载所有动画文件"""
+        self.file_list.clear()
+        animations_dir = self.pet_package.animations_dir
+        if not animations_dir.exists():
+            return
+
+        patterns = ["*.webp", "*.gif", "*.png", "*.apng"]
+
+        for pattern in patterns:
+            for f in sorted(animations_dir.glob(pattern)):
+                item = QListWidgetItem(f.name)
+                item.setData(Qt.ItemDataRole.UserRole, str(f))
+                item.setToolTip(str(f))
+                # 预选已选中的文件
+                if f.name in self.selected_files:
+                    item.setSelected(True)
+                self.file_list.addItem(item)
+
+    def import_files(self):
+        """从外部导入动画文件到宠物包"""
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "选择动画文件",
+            "",
+            "动画文件 (*.webp *.gif *.png *.apng);;所有文件 (*.*)"
         )
-        if file_path:
+
+        if not files:
+            return
+
+        animations_dir = self.pet_package.animations_dir
+        animations_dir.mkdir(parents=True, exist_ok=True)
+
+        imported = []
+        for file_path in files:
+            src_path = Path(file_path)
+            dst_path = animations_dir / src_path.name
+
+            # 检查是否已存在
+            if dst_path.exists():
+                reply = QMessageBox.question(
+                    self,
+                    "文件已存在",
+                    f"文件 '{src_path.name}' 已存在，是否覆盖？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+                if reply == QMessageBox.StandardButton.No:
+                    continue
+
+            # 复制文件
             try:
-                rel_path = Path(file_path).relative_to(assets_path)
-                self.path_edit.setText(str(rel_path).replace("\\", "/"))
-            except ValueError:
-                QMessageBox.warning(self, "警告", "请选择assets目录下的文件")
+                shutil.copy2(src_path, dst_path)
+                imported.append(src_path.name)
+            except Exception as e:
+                QMessageBox.warning(self, "导入失败", f"无法复制文件 '{src_path.name}':\n{e}")
 
-    def load_data(self):
-        if self.animation:
-            self.path_edit.setText(self.animation.path)
-            self.width_spin.setValue(self.animation.width)
-            self.height_spin.setValue(self.animation.height)
+        if imported:
+            self.imported_files.extend(imported)
+            self.load_animation_files()  # 刷新列表
+            # 选中新导入的文件
+            for i in range(self.file_list.count()):
+                item = self.file_list.item(i)
+                if item.text() in imported:
+                    item.setSelected(True)
 
-    def get_animation(self) -> AnimationConfig:
-        return AnimationConfig(
-            path=self.path_edit.text().strip(),
-            width=self.width_spin.value(),
-            height=self.height_spin.value()
-        )
+            QMessageBox.information(
+                self,
+                "导入成功",
+                f"已导入 {len(imported)} 个文件到宠物包"
+            )
+
+    def on_selection_changed(self):
+        """更新预览"""
+        items = self.file_list.selectedItems()
+        if items:
+            file_path = Path(items[0].data(Qt.ItemDataRole.UserRole))
+            self.show_preview(file_path)
+            # 显示文件信息
+            try:
+                size = file_path.stat().st_size
+                size_str = f"{size / 1024:.1f} KB" if size > 1024 else f"{size} B"
+                self.file_info_label.setText(f"文件: {file_path.name}\n大小: {size_str}")
+            except OSError:
+                self.file_info_label.setText(f"文件: {file_path.name}")
+        else:
+            self._clear_preview()
+            self.preview_label.setText("选择文件查看预览")
+            self.file_info_label.clear()
+
+    def _clear_preview(self):
+        """清除预览"""
+        if self._current_movie:
+            self._current_movie.stop()
+            self._current_movie.deleteLater()
+            self._current_movie = None
+        self.preview_label.clear()
+
+    def show_preview(self, file_path: Path):
+        """显示静态预览或 GIF 动画"""
+        self._clear_preview()
+
+        if file_path.suffix.lower() == '.gif':
+            self._current_movie = QMovie(str(file_path))
+            self._current_movie.setScaledSize(QSize(200, 159))
+            self.preview_label.setMovie(self._current_movie)
+            self._current_movie.start()
+        else:
+            pixmap = QPixmap(str(file_path))
+            self.preview_label.setPixmap(pixmap.scaled(
+                200, 159,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            ))
+
+    def get_selected_files(self) -> list[str]:
+        """返回选中的文件名列表（不含路径）"""
+        return [item.text() for item in self.file_list.selectedItems()]
 
 
 class ActionEditDialog(QDialog):
     """动作编辑对话框"""
 
-    def __init__(self, parent=None, action: Optional[PetAction] = None, existing_names: list = None):
+    def __init__(self, pet_package: PetPackage, parent=None, action: Optional[PetAction] = None, existing_names: list = None):
         super().__init__(parent)
+        self.pet_package = pet_package
         self.action = action
         self.existing_names = existing_names or []
-        self.animations: list[AnimationConfig] = []
+        self.animation_files: list[str] = []  # 只存储文件名
+        self._preview_movie: Optional[QMovie] = None  # 保持 GIF 动画引用
         self.setWindowTitle("编辑动作" if action else "添加动作")
-        self.setMinimumWidth(500)
-        self.setMinimumHeight(500)
+        self.setMinimumWidth(550)
+        self.setMinimumHeight(550)
         self.setup_ui()
         if action:
             self.load_data()
@@ -104,6 +232,7 @@ class ActionEditDialog(QDialog):
     def setup_ui(self):
         layout = QVBoxLayout(self)
 
+        # 基本信息组
         basic_group = QGroupBox("基本信息")
         basic_layout = QFormLayout(basic_group)
 
@@ -127,33 +256,40 @@ class ActionEditDialog(QDialog):
         self.weight_spin.setValue(1)
         basic_layout.addRow("权重:", self.weight_spin)
 
-        self.desc_edit = QLineEdit()
-        self.desc_edit.setPlaceholderText("动作描述")
-        basic_layout.addRow("描述:", self.desc_edit)
-
         layout.addWidget(basic_group)
 
-        self.animation_group = QGroupBox("动画配置")
+        # 动画配置组（简化）
+        self.animation_group = QGroupBox("动画文件")
         animation_layout = QVBoxLayout(self.animation_group)
 
         self.anim_list = QListWidget()
-        self.anim_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.anim_list.setToolTip("双击可预览动画")
+        self.anim_list.itemDoubleClicked.connect(self.preview_animation)
         animation_layout.addWidget(self.anim_list)
 
         anim_btn_layout = QHBoxLayout()
-        add_anim_btn = QPushButton("添加动画")
-        add_anim_btn.clicked.connect(self.add_animation)
-        edit_anim_btn = QPushButton("编辑动画")
-        edit_anim_btn.clicked.connect(self.edit_animation)
-        del_anim_btn = QPushButton("删除动画")
-        del_anim_btn.clicked.connect(self.delete_animation)
-        anim_btn_layout.addWidget(add_anim_btn)
-        anim_btn_layout.addWidget(edit_anim_btn)
-        anim_btn_layout.addWidget(del_anim_btn)
+        select_btn = QPushButton("📂 选择/导入动画...")
+        select_btn.clicked.connect(self.select_animations)
+        remove_btn = QPushButton("🗑 移除选中")
+        remove_btn.clicked.connect(self.remove_animation)
+        anim_btn_layout.addWidget(select_btn)
+        anim_btn_layout.addWidget(remove_btn)
         animation_layout.addLayout(anim_btn_layout)
+
+        # 预览区域
+        preview_layout = QHBoxLayout()
+        self.preview_label = QLabel("双击列表项预览")
+        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_label.setMinimumSize(200, 159)
+        self.preview_label.setStyleSheet("background-color: #333; color: white;")
+        preview_layout.addStretch()
+        preview_layout.addWidget(self.preview_label)
+        preview_layout.addStretch()
+        animation_layout.addLayout(preview_layout)
 
         layout.addWidget(self.animation_group)
 
+        # 移动配置组
         self.movement_group = QGroupBox("移动配置")
         movement_layout = QFormLayout(self.movement_group)
 
@@ -169,6 +305,7 @@ class ActionEditDialog(QDialog):
 
         layout.addWidget(self.movement_group)
 
+        # 按钮
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
@@ -186,43 +323,57 @@ class ActionEditDialog(QDialog):
             self.animation_group.setVisible(False)
             self.movement_group.setVisible(True)
 
-    def add_animation(self):
-        dialog = AnimationEditDialog(self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            anim = dialog.get_animation()
-            self.animations.append(anim)
-            self.update_anim_list()
-
-    def edit_animation(self):
-        current_row = self.anim_list.currentRow()
-        if current_row < 0 or current_row >= len(self.animations):
-            QMessageBox.warning(self, "警告", "请先选择一个动画")
-            return
-
-        dialog = AnimationEditDialog(self, self.animations[current_row])
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.animations[current_row] = dialog.get_animation()
-            self.update_anim_list()
-
-    def delete_animation(self):
-        current_row = self.anim_list.currentRow()
-        if current_row < 0 or current_row >= len(self.animations):
-            QMessageBox.warning(self, "警告", "请先选择一个动画")
-            return
-
-        reply = QMessageBox.question(
-            self, "确认删除", "确定要删除这个动画吗？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+    def select_animations(self):
+        """打开动画选择对话框"""
+        dialog = AnimationSelectDialog(
+            self.pet_package,
+            self,
+            self.animation_files
         )
-        if reply == QMessageBox.StandardButton.Yes:
-            del self.animations[current_row]
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.animation_files = dialog.get_selected_files()
+            self.update_anim_list()
+
+    def preview_animation(self, item):
+        """双击预览动画"""
+        filename = item.text()
+        file_path = self.pet_package.animations_dir / filename
+        if not file_path.exists():
+            return
+
+        # 清除之前的预览
+        if self._preview_movie:
+            self._preview_movie.stop()
+            self._preview_movie.deleteLater()
+            self._preview_movie = None
+
+        self.preview_label.clear()
+
+        if file_path.suffix.lower() == '.gif':
+            self._preview_movie = QMovie(str(file_path))
+            self._preview_movie.setScaledSize(QSize(200, 159))
+            self.preview_label.setMovie(self._preview_movie)
+            self._preview_movie.start()
+        else:
+            pixmap = QPixmap(str(file_path))
+            self.preview_label.setPixmap(pixmap.scaled(
+                200, 159,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            ))
+
+    def remove_animation(self):
+        """移除选中的动画文件（只从列表移除，不删除文件）"""
+        current_row = self.anim_list.currentRow()
+        if 0 <= current_row < len(self.animation_files):
+            del self.animation_files[current_row]
             self.update_anim_list()
 
     def update_anim_list(self):
+        """更新动画文件列表显示"""
         self.anim_list.clear()
-        for anim in self.animations:
-            item_text = f"{anim.path} ({anim.width}x{anim.height})"
-            self.anim_list.addItem(item_text)
+        for filename in self.animation_files:
+            self.anim_list.addItem(filename)
 
     def load_data(self):
         if not self.action:
@@ -234,7 +385,7 @@ class ActionEditDialog(QDialog):
         self.weight_spin.setValue(self.action.weight)
 
         if self.action.type == "animation":
-            self.animations = [AnimationConfig(path=f, width=200, height=159) for f in self.action.animation_files]
+            self.animation_files = self.action.animation_files.copy()
             self.update_anim_list()
         elif self.action.type == "movement":
             config = self.action.config
@@ -252,7 +403,7 @@ class ActionEditDialog(QDialog):
             return
 
         action_type = self.type_combo.currentText()
-        if action_type == "animation" and not self.animations:
+        if action_type == "animation" and not self.animation_files:
             QMessageBox.warning(self, "验证失败", "动画类型动作至少需要添加一个动画文件")
             return
 
@@ -269,15 +420,17 @@ class ActionEditDialog(QDialog):
                 "max_distance": self.max_dist_spin.value()
             }
 
-        animation_files = [a.path for a in self.animations]
+        # 保留原有的 zone_actions
+        zone_actions = self.action.zone_actions if self.action else {}
 
         return PetAction(
             name=name,
             type=action_type,
             weight=self.weight_spin.value(),
-            animation_files=animation_files,
+            animation_files=self.animation_files.copy(),
             enabled=self.enabled_check.isChecked(),
-            config=config
+            config=config,
+            zone_actions=zone_actions
         )
 
 
@@ -304,7 +457,7 @@ class ActionManagerGUI(QDialog):
 
         self.action_table = QTableWidget()
         self.action_table.setColumnCount(5)
-        self.action_table.setHorizontalHeaderLabels(["名称", "类型", "描述", "权重", "启用"])
+        self.action_table.setHorizontalHeaderLabels(["名称", "类型", "动画文件数", "权重", "启用"])
         self.action_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.action_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         self.action_table.setColumnWidth(0, 120)
@@ -363,10 +516,12 @@ class ActionManagerGUI(QDialog):
             type_item = QTableWidgetItem(action.type)
             self.action_table.setItem(row, 1, type_item)
 
-            desc_item = QTableWidgetItem("")
-            self.action_table.setItem(row, 2, desc_item)
+            anim_count_item = QTableWidgetItem(str(len(action.animation_files)))
+            anim_count_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.action_table.setItem(row, 2, anim_count_item)
 
             weight_item = QTableWidgetItem(str(action.weight))
+            weight_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.action_table.setItem(row, 3, weight_item)
 
             enabled_item = QTableWidgetItem("是" if action.enabled else "否")
@@ -382,7 +537,7 @@ class ActionManagerGUI(QDialog):
 
     def add_action(self):
         existing_names = [a.name for a in self.pet_package.actions]
-        dialog = ActionEditDialog(self, existing_names=existing_names)
+        dialog = ActionEditDialog(self.pet_package, self, existing_names=existing_names)
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
             action = dialog.get_action()
@@ -400,7 +555,7 @@ class ActionManagerGUI(QDialog):
             return
 
         existing_names = [a.name for a in self.pet_package.actions if a.name != name]
-        dialog = ActionEditDialog(self, action, existing_names)
+        dialog = ActionEditDialog(self.pet_package, self, action, existing_names)
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
             new_action = dialog.get_action()
@@ -428,7 +583,6 @@ class ActionManagerGUI(QDialog):
 
     def save_config(self):
         try:
-            import json
             actions_path = self.pet_package.config_dir / "actions.json"
             actions_data = {
                 "actions": [
@@ -438,7 +592,8 @@ class ActionManagerGUI(QDialog):
                         "weight": a.weight,
                         "animation_files": a.animation_files,
                         "enabled": a.enabled,
-                        "config": a.config
+                        "config": a.config,
+                        "zone_actions": a.zone_actions
                     }
                     for a in self.pet_package.actions
                 ]
