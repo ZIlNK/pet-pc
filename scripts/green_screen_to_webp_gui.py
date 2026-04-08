@@ -22,6 +22,12 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QPixmap, QImage
 
+# 添加脚本目录到路径以导入锚点检测模块
+sys.path.insert(0, str(Path(__file__).parent))
+from anchor_detector import AnchorDetector
+from alignment_processor import AlignmentProcessor
+from typing import Optional
+
 
 def detect_green_screen_color(frame: np.ndarray) -> tuple[int, int, int]:
     h, w = frame.shape[:2]
@@ -93,6 +99,43 @@ def numpy_to_qpixmap(rgba: np.ndarray) -> QPixmap:
     return QPixmap.fromImage(qimage)
 
 
+def draw_anchor_cross(
+    rgba: np.ndarray,
+    anchor_x_ratio: float,
+    anchor_y_ratio: float,
+    color: tuple = (255, 0, 0, 255),
+    size: int = 10
+) -> np.ndarray:
+    """
+    在帧上绘制锚点十字线
+
+    Args:
+        rgba: RGBA 帧
+        anchor_x_ratio: 锚点 X 归一化坐标
+        anchor_y_ratio: 锚点 Y 归一化坐标
+        color: 十字线颜色 (R, G, B, A)
+        size: 十字线臂长（像素）
+
+    Returns:
+        带十字线的帧副本
+    """
+    result = rgba.copy()
+    h, w = result.shape[:2]
+
+    anchor_x = int(anchor_x_ratio * w)
+    anchor_y = int(anchor_y_ratio * h)
+
+    # 绘制水平线
+    x1, x2 = max(0, anchor_x - size), min(w, anchor_x + size)
+    result[anchor_y, x1:x2] = color
+
+    # 绘制垂直线
+    y1, y2 = max(0, anchor_y - size), min(h, anchor_y + size)
+    result[y1:y2, anchor_x] = color
+
+    return result
+
+
 class VideoProcessor(QThread):
     frame_ready = pyqtSignal(np.ndarray, np.ndarray)
     progress = pyqtSignal(int, int)
@@ -103,6 +146,8 @@ class VideoProcessor(QThread):
         super().__init__()
         self.video_path = video_path
         self.params = params
+        self.reference_info = params.get('reference_info', {})
+        self.enable_alignment = params.get('enable_alignment', False)
         self._is_cancelled = False
     
     def cancel(self):
@@ -213,8 +258,23 @@ class VideoProcessor(QThread):
                 frame_count += 1
             
             cap.release()
-            
+
             if not self._is_cancelled:
+                # 如果启用了锚点对齐，处理帧对齐
+                if self.enable_alignment and self.reference_info and frames:
+                    # 检测当前动画的锚点
+                    detector = AnchorDetector()
+                    src_anchor = detector.detect(frames)
+
+                    # 创建对齐处理器
+                    ref_size = (self.reference_info['width'], self.reference_info['height'])
+                    ref_anchor = (self.reference_info['anchor_x'], self.reference_info['anchor_y'])
+                    processor = AlignmentProcessor(ref_size, ref_anchor)
+
+                    # 对齐所有帧
+                    aligned_frames = processor.align_frames(frames, src_anchor)
+                    frames = aligned_frames
+
                 self.finished.emit(frames, output_fps)
                 
         except Exception as e:
@@ -579,7 +639,9 @@ class MainWindow(QMainWindow):
             'end_frame': self.end_frame_spin.value(),
             'crop_bottom': crop_bottom,
             'auto_detect': True,
-            'watermark_regions': watermark_regions
+            'watermark_regions': watermark_regions,
+            'reference_info': getattr(self, 'reference_info', {}) if getattr(self, 'enable_alignment', False) else {},
+            'enable_alignment': getattr(self, 'enable_alignment', False),
         }
     
     def _start_preview(self):
@@ -607,6 +669,7 @@ class MainWindow(QMainWindow):
         self.processor.start()
     
     def _on_frame_ready(self, original: np.ndarray, processed: np.ndarray):
+        # 显示原始帧
         original_rgb = cv2.cvtColor(original, cv2.COLOR_BGR2RGB)
         original_pixmap = QPixmap.fromImage(QImage(
             original_rgb.data, original_rgb.shape[1], original_rgb.shape[0],
@@ -614,6 +677,23 @@ class MainWindow(QMainWindow):
         ))
         self.original_preview.setPixmap(original_pixmap.scaled(
             self.original_preview.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        ))
+
+        # 显示处理的帧（可选带锚点叠加）
+        if self.show_anchor_overlay and self.reference_info:
+            ref_anchor_x = self.reference_info.get('anchor_x', 0.5)
+            ref_anchor_y = self.reference_info.get('anchor_y', 0.5)
+            processed = draw_anchor_cross(processed, ref_anchor_x, ref_anchor_y)
+
+        processed_rgb = cv2.cvtColor(processed, cv2.COLOR_BGR2RGB)
+        processed_pixmap = QPixmap.fromImage(QImage(
+            processed_rgb.data, processed_rgb.shape[1], processed_rgb.shape[0],
+            processed_rgb.strides[0], QImage.Format.Format_RGB888
+        ))
+        self.processed_preview.label.setPixmap(processed_pixmap.scaled(
+            self.processed_preview.label.size(),
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation
         ))
