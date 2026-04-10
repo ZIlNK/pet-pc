@@ -12,10 +12,13 @@ from PyQt6.QtWidgets import (
     QDialog,
     QFileDialog,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QVBoxLayout,
     QHBoxLayout,
+    QFormLayout,
+    QTabWidget,
     QWidget,
 )
 
@@ -36,18 +39,105 @@ class SetupWizard(QDialog):
 
     def setup_ui(self):
         self.setWindowTitle("Desktop Pet - 初始配置")
-        self.setFixedSize(450, 350)
+        self.setFixedSize(450, 400)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
 
-        layout = QVBoxLayout(self)
+        # 创建 Tab 控件
+        tabs = QTabWidget(self)
+
+        # Tab 1: 快速创建
+        quick_create_widget = self._create_quick_create_tab()
+        tabs.addTab(quick_create_widget, "快速创建")
+
+        # Tab 2: 高级导入
+        advanced_widget = self._create_advanced_tab()
+        tabs.addTab(advanced_widget, "高级导入")
+
+        # 主布局
+        main_layout = QVBoxLayout(self)
+        main_layout.addWidget(tabs)
+
+        # 底部按钮
+        btn_bottom = QHBoxLayout()
+        btn_bottom.addStretch()
+
+        btn_skip = QPushButton("跳过")
+        btn_skip.clicked.connect(self.skip_setup)
+        btn_bottom.addWidget(btn_skip)
+
+        btn_exit = QPushButton("退出")
+        btn_exit.clicked.connect(self.reject)
+        btn_bottom.addWidget(btn_exit)
+
+        main_layout.addLayout(btn_bottom)
+
+    def _create_quick_create_tab(self) -> QWidget:
+        """创建快速创建 Tab"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
         layout.setSpacing(15)
 
         # 欢迎信息
-        welcome_label = QLabel("<h2>欢迎使用 Desktop Pet!</h2>")
-        welcome_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(welcome_label)
+        title = QLabel("<h3>上传图片快速创建桌宠</h3>")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
 
-        info_label = QLabel("\n未检测到宠物资源包。\n请选择以下方式之一来添加宠物资源：")
+        description = QLabel("只需上传一张图片，即可创建您的专属桌宠")
+        description.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        description.setStyleSheet("color: gray;")
+        layout.addWidget(description)
+
+        # 表单布局
+        form_layout = QFormLayout()
+        form_layout.setSpacing(10)
+
+        # 宠物名称输入
+        self.pet_name_input = QLineEdit()
+        self.pet_name_input.setPlaceholderText("输入宠物名称，如：小可爱")
+        self.pet_name_input.setMinimumWidth(250)
+        form_layout.addRow("宠物名称:", self.pet_name_input)
+
+        layout.addLayout(form_layout)
+
+        # 图片选择区域
+        image_container = QWidget()
+        image_layout = QVBoxLayout(image_container)
+
+        self.image_path_label = QLabel("未选择图片")
+        self.image_path_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_path_label.setStyleSheet("border: 1px dashed #aaa; padding: 20px; color: gray;")
+        image_layout.addWidget(self.image_path_label)
+
+        btn_select_image = QPushButton("选择图片")
+        btn_select_image.setMinimumHeight(40)
+        btn_select_image.clicked.connect(self._select_image_for_quick_create)
+        image_layout.addWidget(btn_select_image)
+
+        layout.addWidget(image_container)
+
+        # 创建按钮
+        btn_create = QPushButton("创建桌宠")
+        btn_create.setMinimumHeight(45)
+        btn_create.setStyleSheet("font-weight: bold;")
+        btn_create.clicked.connect(self._quick_create_pet)
+        layout.addWidget(btn_create)
+
+        layout.addStretch()
+
+        return widget
+
+    def _create_advanced_tab(self) -> QWidget:
+        """创建高级导入 Tab"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setSpacing(15)
+
+        # 欢迎信息
+        title = QLabel("<h3>高级导入</h3>")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
+
+        info_label = QLabel("\n请选择以下方式之一来添加宠物资源：")
         info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(info_label)
 
@@ -70,7 +160,7 @@ class SetupWizard(QDialog):
         btn_import.setMinimumHeight(40)
         btn_layout.addWidget(btn_import)
 
-        # 选项3: 从项目复制默认宠物 (仅开发模式)
+        # 选项3: 从项目复制默认宠物
         btn_copy_default = QPushButton("从项目复制默认宠物")
         btn_copy_default.setToolTip("从项目目录复制默认宠物资源 (开发模式)")
         btn_copy_default.clicked.connect(self.copy_default_pet_from_project)
@@ -94,19 +184,7 @@ class SetupWizard(QDialog):
 
         layout.addWidget(info_frame)
 
-        # 底部按钮
-        btn_bottom = QHBoxLayout()
-        btn_bottom.addStretch()
-
-        btn_skip = QPushButton("跳过")
-        btn_skip.clicked.connect(self.skip_setup)
-        btn_bottom.addWidget(btn_skip)
-
-        btn_exit = QPushButton("退出")
-        btn_exit.clicked.connect(self.reject)
-        btn_bottom.addWidget(btn_exit)
-
-        layout.addLayout(btn_bottom)
+        return widget
 
     def select_pets_directory(self):
         """Select an existing pets directory."""
