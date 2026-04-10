@@ -35,6 +35,7 @@ class SetupWizard(QDialog):
         self.pets_path = pets_path or get_pets_path()
         self.selected_dir: Path | None = None
         self._imported = False
+        self._selected_image_path: Path | None = None
         self.setup_ui()
 
     def setup_ui(self):
@@ -185,6 +186,99 @@ class SetupWizard(QDialog):
         layout.addWidget(info_frame)
 
         return widget
+
+    def _select_image_for_quick_create(self):
+        """选择图片用于快速创建"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择宠物图片",
+            "",
+            "图片文件 (*.png *.jpg *.jpeg *.bmp *.gif *.webp);;所有文件 (*)",
+        )
+
+        if file_path:
+            self._selected_image_path = Path(file_path)
+            # 显示文件名
+            self.image_path_label.setText(self._selected_image_path.name)
+            self.image_path_label.setStyleSheet("border: 1px dashed #aaa; padding: 20px; color: #333;")
+
+    def _quick_create_pet(self):
+        """快速创建宠物素材包"""
+        # 验证名称
+        pet_name = self.pet_name_input.text().strip()
+        if not pet_name:
+            QMessageBox.warning(self, "输入错误", "请输入宠物名称")
+            return
+
+        # 验证图片
+        if not hasattr(self, '_selected_image_path') or not self._selected_image_path:
+            QMessageBox.warning(self, "选择错误", "请选择一张图片")
+            return
+
+        if not self._selected_image_path.exists():
+            QMessageBox.warning(self, "文件错误", "选择的图片文件不存在")
+            return
+
+        try:
+            # 生成唯一目录名
+            unique_name = self._generate_unique_pet_name(pet_name)
+            pet_dir = self.pets_path / unique_name
+            animations_dir = pet_dir / "animations"
+            config_dir = pet_dir / "config"
+
+            # 创建目录结构
+            self.pets_path.mkdir(parents=True, exist_ok=True)
+            animations_dir.mkdir(parents=True, exist_ok=True)
+            config_dir.mkdir(parents=True, exist_ok=True)
+
+            # 处理图片并保存
+            target_image = animations_dir / "idle.png.webp"
+            if not self._process_user_image(self._selected_image_path, target_image):
+                QMessageBox.critical(self, "处理失败", "图片处理失败，请重试")
+                return
+
+            # 生成 meta.json
+            meta_content = {
+                "name": pet_name,
+                "author": "用户",
+                "version": "1.0.0",
+                "description": "使用图片快速创建",
+                "preview": "idle.png.webp",
+                "regular_image": "idle.png.webp",
+                "flying_image": "idle.png.webp",
+                "rest_animation": "idle.png.webp"
+            }
+            with open(pet_dir / "meta.json", "w", encoding="utf-8") as f:
+                json.dump(meta_content, f, ensure_ascii=False, indent=2)
+
+            # 生成 actions.json
+            actions_content = {
+                "actions": [
+                    {
+                        "name": "idle",
+                        "type": "animation",
+                        "weight": 0,
+                        "animation_files": ["idle.png.webp"],
+                        "enabled": True,
+                        "config": {},
+                        "zone_actions": {}
+                    }
+                ]
+            }
+            with open(config_dir / "actions.json", "w", encoding="utf-8") as f:
+                json.dump(actions_content, f, ensure_ascii=False, indent=2)
+
+            self._imported = True
+            QMessageBox.information(
+                self,
+                "创建成功",
+                f"成功创建宠物 '{pet_name}'！",
+            )
+            self.accept()
+
+        except Exception as e:
+            logger.error(f"Failed to create pet: {e}")
+            QMessageBox.critical(self, "创建失败", f"创建宠物时发生错误：\n{e}")
 
     def select_pets_directory(self):
         """Select an existing pets directory."""
