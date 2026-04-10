@@ -45,14 +45,24 @@ temp_*.png
 
 # uv
 .uv/
-uv.lock
 
 # Build outputs (huge compiled binaries)
 target/
 node_modules/
-pets/
+
+# PyInstaller generated files
+*.spec
+build/
+dist/
+
+# Pet packages - allow default package
+pets/*
+
 checklist.md
 SPEC.md
 tasks.md
 CLAUDE.md
 pet-pc-api-review.md
+
+docs/
+.claude/

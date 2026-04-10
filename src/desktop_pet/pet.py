@@ -1,25 +1,37 @@
-import sys
+import logging
 import random
 import asyncio
+import sys
 from pathlib import Path
-from PyQt6.QtWidgets import QApplication, QLabel, QWidget, QMenu
+from PyQt6.QtWidgets import QApplication, QLabel, QWidget, QMenu, QDialog
 from PyQt6.QtGui import QPixmap, QMovie, QAction
 from PyQt6.QtCore import Qt, QPoint, QTimer, QSize
 from PIL import Image
 
 from .states import PetState
-from .utils import get_assets_path
+from .utils import get_assets_path, get_pets_path
 from .config_manager import ConfigManager, ActionManager, ActionConfig, ClickZoneConfig
 from .action_manager_gui import ActionManagerGUI
 from .pet_loader import PetLoader, PetPackage
 from .motion_controller import MotionModeController
 from .motion_control_panel import MotionControlPanel
 from .api_server import ApiServer
+from .setup_wizard import SetupWizard
+
+logger = logging.getLogger(__name__)
 
 
 class DesktopPet(QWidget):
     def __init__(self):
         super().__init__()
+
+        # Check if pet resources exist before initializing
+        if not self._check_pet_resources():
+            # Show setup wizard if no pets found
+            if not self._show_setup_wizard():
+                # User cancelled setup, exit
+                QApplication.quit()
+                return
 
         self._api_loop = None
         self.assets_path = get_assets_path()
@@ -103,18 +115,18 @@ class DesktopPet(QWidget):
         if pet_package:
             self.current_pet_package = pet_package
             self.pet_loader.set_current_pet(pet_package)
-            print(f"已加载桌宠资源包: {pet_package.meta.name}")
+            logger.info(f"Loaded pet package: {pet_package.meta.name}")
             self._load_pet_animations()
         else:
-            print(f"无法加载桌宠资源包: {pet_name}，尝试使用默认资源包")
+            logger.warning(f"Failed to load pet package: {pet_name}, trying default package")
             pet_package = self.pet_loader.load_pet("default")
             if pet_package:
                 self.current_pet_package = pet_package
                 self.pet_loader.set_current_pet(pet_package)
-                print(f"已加载默认桌宠资源包: {pet_package.meta.name}")
+                logger.info(f"Loaded default pet package: {pet_package.meta.name}")
                 self._load_pet_animations()
             else:
-                print("错误: 无法加载任何桌宠资源包")
+                logger.error("Failed to load any pet package")
 
     def _load_pet_animations(self) -> None:
         if not self.current_pet_package:
@@ -130,7 +142,7 @@ class DesktopPet(QWidget):
                         self.idle_gif = QMovie(str(idle_path))
                         self.idle_gif.setScaledSize(QSize(200, 159))
                     except Exception as e:
-                        print(f"Failed to load idle animation: {e}")
+                        logger.error(f"Failed to load idle animation: {e}")
 
             if action.name == "walk" and action.animation_files:
                 if len(action.animation_files) >= 1:
@@ -140,7 +152,7 @@ class DesktopPet(QWidget):
                             self.walk_left_gif = QMovie(str(walk_left_path))
                             self.walk_left_gif.setScaledSize(QSize(200, 159))
                         except Exception as e:
-                            print(f"Failed to load walk_left animation: {e}")
+                            logger.error(f"Failed to load walk_left animation: {e}")
                 if len(action.animation_files) >= 2:
                     walk_right_path = animations_dir / action.animation_files[1]
                     if walk_right_path.exists():
@@ -148,7 +160,7 @@ class DesktopPet(QWidget):
                             self.walk_right_gif = QMovie(str(walk_right_path))
                             self.walk_right_gif.setScaledSize(QSize(200, 159))
                         except Exception as e:
-                            print(f"Failed to load walk_right animation: {e}")
+                            logger.error(f"Failed to load walk_right animation: {e}")
 
     def _detect_click_zone(self, x: float, y: float) -> str | None:
         for zone in self._click_zones:
@@ -274,7 +286,7 @@ class DesktopPet(QWidget):
                     self.hui_gif = QMovie(str(rest_animation_path))
                     self.hui_gif.setScaledSize(QSize(200, 159))
                 except Exception as e:
-                    print(f"加载休息提醒动画失败: {e}")
+                    logger.error(f"Failed to load rest reminder animation: {e}")
                     self.hui_gif = None
             else:
                 # 回退到默认配置
@@ -404,22 +416,22 @@ class DesktopPet(QWidget):
 
     def switch_to_gif(self, direction: str = 'right'):
         if self.state == PetState.REST_REMINDER:
-            print("休息提醒状态下不执行GIF切换")
+            logger.debug("Skipping GIF switch during rest reminder state")
             return
         
         if self.current_gif and self.current_gif.state() == QMovie.MovieState.Running:
             self.current_gif.stop()
         
-        print(f"切换到{direction} GIF")
+        logger.debug(f"Switching to {direction} GIF")
         target_gif = self.walk_left_gif if direction == 'left' else self.walk_right_gif
-        
+
         if target_gif and target_gif.isValid():
-            print("显示目标GIF")
+            logger.debug(f"Showing {direction} GIF")
             self.label.setMovie(target_gif)
             target_gif.start()
             self.current_gif = target_gif
         else:
-            print("目标GIF不存在或无效，切换到静态图像")
+            logger.debug("Target GIF not found or invalid, switching to static image")
             self.switch_to_static()
 
     def switch_to_static(self, pixmap: QPixmap | None = None):
@@ -436,7 +448,7 @@ class DesktopPet(QWidget):
     
     def play_animation_action(self, action: ActionConfig):
         if self.state == PetState.REST_REMINDER:
-            print("休息提醒状态下不执行动画")
+            logger.debug("Skipping animation during rest reminder state")
             return
 
         self.movement_timer.stop()
@@ -446,11 +458,11 @@ class DesktopPet(QWidget):
         if self.current_gif and self.current_gif.state() == QMovie.MovieState.Running:
             self.current_gif.stop()
 
-        print(f"播放动画: {action.name}")
+        logger.info(f"Playing animation: {action.name}")
 
         movie = self._load_pet_animation(action.name)
         if movie and movie.isValid():
-            print(f"显示动画GIF: {action.name}")
+            logger.debug(f"Showing animation GIF: {action.name}")
             self.label.setMovie(movie)
 
             self.current_animation_type = action.name
@@ -465,7 +477,7 @@ class DesktopPet(QWidget):
             movie.start()
             self.current_gif = movie
         else:
-            print(f"动画GIF不存在，显示静态图像")
+            logger.debug("Animation GIF not found, showing static image")
             self.switch_to_static()
             self.start_random_movement_timer()
 
@@ -495,7 +507,7 @@ class DesktopPet(QWidget):
             movie.setScaledSize(QSize(200, 159))
             return movie
         except Exception as e:
-            print(f"加载动画失败 {animation_path}: {e}")
+            logger.error(f"Failed to load animation {animation_path}: {e}")
             return None
     
     def _disconnect_current_gif_signals(self):
@@ -511,7 +523,7 @@ class DesktopPet(QWidget):
     
     def _on_animation_finished(self):
         action_name = self.current_animation_type
-        print(f"动画播放完毕: {action_name}")
+        logger.debug(f"Animation finished: {action_name}")
         
         self._disconnect_current_gif_signals()
         self.switch_to_static()
@@ -538,7 +550,7 @@ class DesktopPet(QWidget):
             screen_geometry = screen.availableGeometry()
 
             direction = random.choice([-1, 1])
-            print(f"随机移动方向: {direction}")
+            logger.debug(f"Random movement direction: {direction}")
 
             config = action.config
             min_dist = config.get("min_distance", 30)
@@ -691,6 +703,12 @@ class DesktopPet(QWidget):
 
         context_menu.addSeparator()
 
+        # Minimize to tray option (if tray is enabled)
+        if hasattr(self, '_tray_icon') and self._tray_icon and self.config_manager.tray.enabled:
+            minimize_to_tray_action = QAction('最小化到托盘', self)
+            minimize_to_tray_action.triggered.connect(self._minimize_to_tray)
+            context_menu.addAction(minimize_to_tray_action)
+
         exit_action = QAction('退出', self)
         exit_action.triggered.connect(self.exit_app)
         context_menu.addAction(exit_action)
@@ -756,7 +774,7 @@ class DesktopPet(QWidget):
         else:
             self.switch_to_static(self.regular_pixmap)
 
-        print(f"已切换到桌宠: {pet_package.meta.name}")
+        logger.info(f"Switched to pet: {pet_package.meta.name}")
 
     def open_action_manager(self):
         dialog = ActionManagerGUI(self.config_manager, self.current_pet_package, self)
@@ -876,6 +894,56 @@ class DesktopPet(QWidget):
     def exit_app(self):
         QApplication.quit()
 
+    def _minimize_to_tray(self):
+        """Minimize the pet to the system tray."""
+        if hasattr(self, '_tray_icon') and self._tray_icon:
+            self.hide()
+            self._tray_icon.set_pet_visible(False)
+
+    def set_tray_icon(self, tray_icon):
+        """Set the system tray icon reference.
+
+        Args:
+            tray_icon: The SystemTrayIcon instance.
+        """
+        self._tray_icon = tray_icon
+
+    def _check_pet_resources(self) -> bool:
+        """Check if any valid pet packages exist."""
+        pets_path = get_pets_path()
+        if not pets_path.exists():
+            logger.info(f"Pets directory does not exist: {pets_path}")
+            return False
+
+        # Check if there are any valid pet packages
+        pet_loader = PetLoader(pets_path)
+        pets = pet_loader.scan_pets()
+        if len(pets) > 0:
+            logger.info(f"Found {len(pets)} pet package(s)")
+            return True
+
+        logger.info("No valid pet packages found")
+        return False
+
+    def _show_setup_wizard(self) -> bool:
+        """Show setup wizard when no pet resources found.
+
+        Returns True if setup was successful, False if user cancelled.
+        """
+        pets_path = get_pets_path()
+        wizard = SetupWizard(pets_path)
+
+        result = wizard.exec()
+
+        if result == QDialog.DialogCode.Accepted:
+            logger.info("Setup wizard completed successfully")
+            # Reinitialize pet loader with the new pets path
+            self.pet_loader = PetLoader(pets_path)
+            return True
+        else:
+            logger.info("Setup wizard cancelled")
+            return False
+
     def _get_screen_geometry(self):
         screen = QApplication.primaryScreen()
         return screen.availableGeometry()
@@ -899,6 +967,10 @@ class DesktopPet(QWidget):
             self.switch_to_gif('left')
         else:
             self.switch_to_static()
+
+        # Stop existing timer if running
+        if hasattr(self, 'inertia_timer') and self.inertia_timer:
+            self.inertia_timer.stop()
 
         self.inertia_timer = QTimer()
         self.inertia_timer.timeout.connect(self.apply_inertia)
@@ -942,6 +1014,10 @@ class DesktopPet(QWidget):
         self.state = PetState.FALLING
         self.switch_to_static(self.flying_pixmap)
 
+        # Stop existing timer if running
+        if hasattr(self, 'gravity_timer') and self.gravity_timer:
+            self.gravity_timer.stop()
+
         self.gravity_timer = QTimer()
         self.gravity_timer.timeout.connect(self.apply_gravity)
         self.current_fall_speed = 1
@@ -972,12 +1048,12 @@ class DesktopPet(QWidget):
             return
 
         if not self.current_pet_package:
-            print("没有加载的桌宠资源包")
+            logger.warning("No pet package loaded")
             return
 
         enabled_actions = [a for a in self.current_pet_package.actions if a.enabled]
         if not enabled_actions:
-            print("没有可用的动作")
+            logger.warning("No available actions")
             return
 
         total_weight = sum(a.weight for a in enabled_actions)
@@ -993,14 +1069,14 @@ class DesktopPet(QWidget):
                     action = a
                     break
 
-        print(f"随机行为: {action.name}")
+        logger.debug(f"Random action: {action.name}")
 
         if action.type == "movement":
             self.execute_movement_action_from_pet(action)
         elif action.type == "animation":
             self.play_animation_action_from_pet(action)
         else:
-            print(f"未知动作类型: {action.type}")
+            logger.warning(f"Unknown action type: {action.type}")
 
     def execute_movement_action_from_pet(self, action):
         if self.state == PetState.IDLE:
@@ -1008,7 +1084,7 @@ class DesktopPet(QWidget):
             screen_geometry = screen.availableGeometry()
 
             direction = random.choice([-1, 1])
-            print(f"随机移动方向: {direction}")
+            logger.debug(f"Random movement direction: {direction}")
 
             min_dist = action.config.get("min_distance", 30)
             max_dist = action.config.get("max_distance", 100)
@@ -1033,7 +1109,7 @@ class DesktopPet(QWidget):
 
     def play_animation_action_from_pet(self, action):
         if self.state == PetState.REST_REMINDER:
-            print("休息提醒状态下不执行动画")
+            logger.debug("Skipping animation during rest reminder state")
             return
 
         self.movement_timer.stop()
@@ -1043,11 +1119,11 @@ class DesktopPet(QWidget):
         if self.current_gif and self.current_gif.state() == QMovie.MovieState.Running:
             self.current_gif.stop()
 
-        print(f"播放动画: {action.name}")
+        logger.info(f"Playing animation: {action.name}")
 
         movie = self._load_pet_animation(action.name)
         if movie and movie.isValid():
-            print(f"显示动画GIF: {action.name}")
+            logger.debug(f"Showing animation GIF: {action.name}")
             self.label.setMovie(movie)
 
             self.current_animation_type = action.name
@@ -1062,7 +1138,7 @@ class DesktopPet(QWidget):
             movie.start()
             self.current_gif = movie
         else:
-            print(f"动画GIF不存在，显示静态图像")
+            logger.debug("Animation GIF not found, showing static image")
             self.switch_to_static()
             self.start_random_movement_timer()
 
@@ -1084,6 +1160,10 @@ class DesktopPet(QWidget):
             self.animation_total_steps = max(1, int(distance / pixels_per_step))
 
         self.animation_step = 0
+
+        # Stop existing timer if running
+        if hasattr(self, 'animation_timer') and self.animation_timer:
+            self.animation_timer.stop()
 
         if not hasattr(self, 'animation_timer'):
             self.animation_timer = QTimer()

@@ -1,4 +1,5 @@
 import json
+import logging
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -6,6 +7,10 @@ from typing import Any
 
 from PyQt6.QtCore import QSize
 from PyQt6.QtGui import QMovie
+
+from .utils import get_config_path
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -76,11 +81,28 @@ class ClickDetectionConfig:
     zones: list[ClickZoneConfig] = field(default_factory=list)
 
 
+@dataclass
+class StartupConfig:
+    enabled: bool = False
+    start_hidden: bool = False
+
+
+@dataclass
+class TrayConfig:
+    enabled: bool = True
+    minimize_to_tray: bool = True
+
+
 class ConfigManager:
     def __init__(self, config_dir: Path | None = None):
+        # Use single config directory for all config files
         if config_dir is None:
-            config_dir = Path(__file__).parent.parent.parent / "config"
+            config_dir = get_config_path()
         self.config_dir = Path(config_dir)
+
+        # Ensure config directory exists
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+
         self.default_config_path = self.config_dir / "default_config.json"
         self.user_config_path = self.config_dir / "user_config.json"
 
@@ -92,6 +114,8 @@ class ConfigManager:
         self._app_config: AppConfig | None = None
         self._motion_mode: MotionModeConfig | None = None
         self._click_detection: ClickDetectionConfig | None = None
+        self._startup: StartupConfig | None = None
+        self._tray: TrayConfig | None = None
 
         self.load_config()
     
@@ -114,7 +138,7 @@ class ConfigManager:
                     del data["_instructions"]
                 return data
         except (json.JSONDecodeError, IOError) as e:
-            print(f"加载配置文件失败 {path}: {e}")
+            logger.error(f"Failed to load config file {path}: {e}")
             return {}
     
     def _deep_merge(self, base: dict, override: dict) -> dict:
@@ -205,6 +229,18 @@ class ConfigManager:
             enabled=click_data.get("enabled", False),
             zones=click_zones
         )
+
+        startup_data = self._raw_config.get("startup", {})
+        self._startup = StartupConfig(
+            enabled=startup_data.get("enabled", False),
+            start_hidden=startup_data.get("start_hidden", False)
+        )
+
+        tray_data = self._raw_config.get("tray", {})
+        self._tray = TrayConfig(
+            enabled=tray_data.get("enabled", True),
+            minimize_to_tray=tray_data.get("minimize_to_tray", True)
+        )
     
     @property
     def actions(self) -> dict[str, ActionConfig]:
@@ -233,6 +269,14 @@ class ConfigManager:
     @property
     def click_detection(self) -> ClickDetectionConfig:
         return self._click_detection
+
+    @property
+    def startup(self) -> StartupConfig:
+        return self._startup
+
+    @property
+    def tray(self) -> TrayConfig:
+        return self._tray
 
     @property
     def config(self) -> dict[str, Any]:
@@ -378,7 +422,7 @@ class ActionManager:
                     movie.setScaledSize(QSize(anim_config.width, anim_config.height))
                     movies.append(movie)
                 except Exception as e:
-                    print(f"加载动画失败 {full_path}: {e}")
+                    logger.error(f"Failed to load animation {full_path}: {e}")
         
         self._loaded_movies[cache_key] = movies
         return movies
@@ -406,7 +450,7 @@ class ActionManager:
             ))
             return movie
         except Exception as e:
-            print(f"加载休息提醒动画失败 {full_path}: {e}")
+            logger.error(f"Failed to load rest reminder animation {full_path}: {e}")
             return None
     
     def clear_cache(self) -> None:

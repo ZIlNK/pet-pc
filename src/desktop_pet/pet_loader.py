@@ -3,6 +3,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .utils import get_pets_path
+
 
 @dataclass
 class PetMeta:
@@ -40,7 +42,7 @@ class PetPackage:
 class PetLoader:
     def __init__(self, pets_dir: Path | None = None):
         if pets_dir is None:
-            pets_dir = Path(__file__).parent.parent.parent / "pets"
+            pets_dir = get_pets_path()
         self.pets_dir = Path(pets_dir)
         self._current_pet: PetPackage | None = None
 

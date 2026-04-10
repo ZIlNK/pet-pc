@@ -277,8 +277,8 @@ class SetupWizard(QDialog):
             self.accept()
 
         except Exception as e:
-            logger.error(f"Failed to create pet: {e}")
-            QMessageBox.critical(self, "创建失败", f"创建宠物时发生错误：\n{e}")
+            logger.error(f"Failed to create pet: {e}", exc_info=True)
+            QMessageBox.critical(self, "创建失败", "创建宠物时发生错误，请重试。")
 
     def select_pets_directory(self):
         """Select an existing pets directory."""
@@ -505,24 +505,23 @@ class SetupWizard(QDialog):
     def _process_user_image(self, source_path: Path, target_path: Path) -> bool:
         """处理用户上传的图片：缩放并转换为 WebP"""
         try:
-            img = Image.open(source_path)
+            with Image.open(source_path) as img:
+                # 检查是否为有效图片
+                if img.mode not in ('RGBA', 'RGB', 'P'):
+                    img = img.convert('RGBA')
 
-            # 检查是否为有效图片
-            if img.mode not in ('RGBA', 'RGB', 'P'):
-                img = img.convert('RGBA')
+                # 自动缩放（保持宽高比，最大宽度 300px）
+                max_width = 300
+                if img.width > max_width:
+                    ratio = max_width / img.width
+                    new_height = int(img.height * ratio)
+                    img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
 
-            # 自动缩放（保持宽高比，最大宽度 300px）
-            max_width = 300
-            if img.width > max_width:
-                ratio = max_width / img.width
-                new_height = int(img.height * ratio)
-                img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
+                # 创建目标目录
+                target_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # 创建目标目录
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # 转换为 WebP 格式并保存
-            img.save(target_path, "WEBP", quality=95)
+                # 转换为 WebP 格式并保存
+                img.save(target_path, "WEBP", quality=95)
             return True
 
         except Exception as e:

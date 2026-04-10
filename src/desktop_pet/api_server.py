@@ -1,6 +1,7 @@
 import asyncio
 import ipaddress
 import json
+import logging
 from datetime import datetime
 from typing import Optional
 from urllib.parse import urlparse
@@ -10,6 +11,8 @@ from aiohttp import web
 from aiohttp.web import Request, Response
 
 from .motion_controller import MotionModeController
+
+logger = logging.getLogger(__name__)
 
 
 class ApiServer:
@@ -61,11 +64,11 @@ class ApiServer:
         try:
             await self._site.start()
             self._running = True
-            print(f"API 服务器已启动: http://{self._host}:{self._port}")
-            print(f"IP 白名单: {self._allowed_ips}")
+            logger.info(f"API server started: http://{self._host}:{self._port}")
+            logger.info(f"IP whitelist: {self._allowed_ips}")
             return True
         except Exception as e:
-            print(f"启动 API 服务器失败: {e}")
+            logger.error(f"Failed to start API server: {e}")
             return False
 
     async def stop(self) -> bool:
@@ -81,7 +84,7 @@ class ApiServer:
         self._app = None
         self._runner = None
         self._site = None
-        print("API 服务器已停止")
+        logger.info("API server stopped")
         return True
 
     def _get_client_ip(self, request: Request) -> str:
@@ -110,10 +113,10 @@ class ApiServer:
 
             client_ip = self._get_client_ip(request)
 
-            print(f"[API] 请求来自 IP: {client_ip}, 白名单: {self._allowed_ips}")
+            logger.debug(f"[API] Request from IP: {client_ip}, whitelist: {self._allowed_ips}")
 
             if client_ip not in self._allowed_ips:
-                print(f"拒绝访问: IP {client_ip} 不在白名单中")
+                logger.warning(f"Access denied: IP {client_ip} not in whitelist")
                 return web.json_response(
                     {"success": False, "error": "Access denied"},
                     status=403
@@ -299,7 +302,7 @@ class ApiServer:
 
             if success and callback_url:
                 if not self._is_safe_callback_url(callback_url):
-                    print(f"警告: 回调URL不安全，已拒绝: {callback_url}")
+                    logger.warning(f"Unsafe callback URL rejected: {callback_url}")
                 else:
                     asyncio.create_task(self._send_animation_callback(name, callback_url))
 
@@ -343,10 +346,10 @@ class ApiServer:
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(callback_url, json=payload) as response:
                     if response.status == 200:
-                        print(f"动画回调成功: {animation_name} -> {callback_url}")
+                        logger.info(f"Animation callback success: {animation_name} -> {callback_url}")
                     else:
-                        print(f"动画回调响应异常: {response.status}")
+                        logger.warning(f"Animation callback failed with status: {response.status}")
         except asyncio.TimeoutError:
-            print(f"动画回调超时: {animation_name} -> {callback_url}")
+            logger.warning(f"Animation callback timeout: {animation_name} -> {callback_url}")
         except Exception as e:
-            print(f"动画回调失败: {animation_name} -> {callback_url}, error: {e}")
+            logger.error(f"Animation callback failed: {animation_name} -> {callback_url}, error: {e}")

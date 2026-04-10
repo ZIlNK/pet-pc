@@ -2,7 +2,19 @@
   "permissions": {
     "allow": [
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(uv sync:*)",
+      "Bash(uv run:*)",
+      "Bash(git push:*)",
+      "Bash(ls -lh pets/default/animations/*.webp)",
+      "Bash(ls -lh pets/default/animations/*.backup)",
+      "Bash(git ls-tree:*)",
+      "Bash(git -C D:/code/pet-pc add src/desktop_pet/setup_wizard.py)",
+      "Bash(git -C D:/code/pet-pc commit -m \"feat\\(setup\\): add image processing helper functions\")",
+      "Bash(git -C D:/code/pet-pc commit -m \"feat\\(setup\\): add tab UI for quick create and advanced import\")",
+      "Bash(git -C D:/code/pet-pc commit -m \"feat\\(setup\\): implement quick create logic\")",
+      "Bash(git -C D:/code/pet-pc add .)",
+      "Bash(git -C D:/code/pet-pc status)"
     ]
   }
 }
