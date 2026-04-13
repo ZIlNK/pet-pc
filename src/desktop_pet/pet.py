@@ -6,7 +6,6 @@ from pathlib import Path
 from PyQt6.QtWidgets import QApplication, QLabel, QWidget, QMenu, QDialog
 from PyQt6.QtGui import QPixmap, QMovie, QAction
 from PyQt6.QtCore import Qt, QPoint, QTimer, QSize
-from PIL import Image
 
 from .states import PetState
 from .utils import get_assets_path, get_pets_path
@@ -208,16 +207,12 @@ class DesktopPet(QWidget):
             # 加载常规图片
             regular_image_name = self.current_pet_package.meta.regular_image
             regular_image_path = animations_dir / regular_image_name
-            
+
             # 如果资源包中没有指定图片，使用默认路径
             if not regular_image_path.exists():
                 regular_image_path = self.assets_path / pet_config.regular_image
-            
-            img = Image.open(regular_image_path)
-            # 使用资源包的 animations 目录保存临时文件
-            temp_path = animations_dir / 'temp_fixed.png'
-            img.save(temp_path, icc_profile=None)
 
+            # 直接使用原始路径加载，无需 Image.open
             regular_pixmap = QPixmap(str(regular_image_path))
             self.regular_pixmap = regular_pixmap.scaled(
                 pet_config.size, pet_config.size,
@@ -228,16 +223,13 @@ class DesktopPet(QWidget):
             # 加载飞行图片
             flying_image_name = self.current_pet_package.meta.flying_image
             flying_image_path = animations_dir / flying_image_name
-            
+
             # 如果资源包中没有指定图片，使用默认路径
             if not flying_image_path.exists():
                 flying_image_path = self.assets_path / pet_config.flying_image
-            
+
             try:
-                flying_img = Image.open(flying_image_path)
-                # 使用资源包的 animations 目录保存临时文件
-                temp_flying_path = animations_dir / 'temp_flying_fixed.png'
-                flying_img.save(temp_flying_path, icc_profile=None)
+                # 直接使用原始路径，无需临时文件
                 flying_pixmap = QPixmap(str(flying_image_path))
             except Exception:
                 flying_pixmap = QPixmap(str(flying_image_path))
@@ -249,11 +241,7 @@ class DesktopPet(QWidget):
         else:
             # 回退到默认配置
             regular_image_path = self.assets_path / pet_config.regular_image
-            img = Image.open(regular_image_path)
-            # 使用资源包的 animations 目录保存临时文件
-            temp_path = animations_dir / 'temp_fixed.png'
-            img.save(temp_path, icc_profile=None)
-
+            # 直接使用原始路径加载，无需 Image.open
             regular_pixmap = QPixmap(str(regular_image_path))
             self.regular_pixmap = regular_pixmap.scaled(
                 pet_config.size, pet_config.size,
@@ -263,10 +251,7 @@ class DesktopPet(QWidget):
 
             flying_image_path = self.assets_path / pet_config.flying_image
             try:
-                flying_img = Image.open(flying_image_path)
-                # 使用资源包的 animations 目录保存临时文件
-                temp_flying_path = animations_dir / 'temp_flying_fixed.png'
-                flying_img.save(temp_flying_path, icc_profile=None)
+                # 直接使用原始路径，无需临时文件
                 flying_pixmap = QPixmap(str(flying_image_path))
             except Exception:
                 flying_pixmap = QPixmap(str(flying_image_path))
@@ -731,12 +716,8 @@ class DesktopPet(QWidget):
         regular_image_path = animations_dir / regular_image_name
         if not regular_image_path.exists():
             regular_image_path = self.assets_path / pet_config.regular_image
-        
-        img = Image.open(regular_image_path)
-        # 使用资源包的 animations 目录保存临时文件
-        temp_path = animations_dir / 'temp_fixed.png'
-        img.save(temp_path, icc_profile=None)
 
+        # 直接使用原始路径，无需临时文件
         regular_pixmap = QPixmap(str(regular_image_path))
         self.regular_pixmap = regular_pixmap.scaled(
             pet_config.size, pet_config.size,
@@ -749,12 +730,9 @@ class DesktopPet(QWidget):
         flying_image_path = animations_dir / flying_image_name
         if not flying_image_path.exists():
             flying_image_path = self.assets_path / pet_config.flying_image
-        
+
         try:
-            flying_img = Image.open(flying_image_path)
-            # 使用资源包的 animations 目录保存临时文件
-            temp_flying_path = animations_dir / 'temp_flying_fixed.png'
-            flying_img.save(temp_flying_path, icc_profile=None)
+            # 直接使用原始路径，无需临时文件
             flying_pixmap = QPixmap(str(flying_image_path))
         except Exception:
             flying_pixmap = QPixmap(str(flying_image_path))
