@@ -444,7 +444,45 @@ class MainWindow(QMainWindow):
         self.fps_spin.setRange(1.0, 120.0); self.fps_spin.setValue(30.0) # WebP建议默认30帧
         fps_layout.addWidget(self.fps_spin)
         params_layout.addLayout(fps_layout)
-        
+
+        # --- WebP 压缩设置 ---
+        compress_group = QGroupBox("文件压缩")
+        compress_layout = QVBoxLayout(compress_group)
+
+        quality_layout = QHBoxLayout()
+        quality_layout.addWidget(QLabel("压缩质量:"))
+        self.quality_slider = QSlider(Qt.Orientation.Horizontal)
+        self.quality_slider.setRange(1, 100)
+        self.quality_slider.setValue(90)
+        self.quality_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.quality_slider.setTickInterval(25)
+        quality_layout.addWidget(self.quality_slider)
+        self.quality_label = QLabel("90%")
+        self.quality_label.setMinimumWidth(35)
+        quality_layout.addWidget(self.quality_label)
+        compress_layout.addLayout(quality_layout)
+
+        # 连接质量滑块到标签更新
+        self.quality_slider.valueChanged.connect(
+            lambda v: self.quality_label.setText(f"{v}%")
+        )
+
+        target_size_layout = QHBoxLayout()
+        target_size_layout.addWidget(QLabel("目标文件大小:"))
+        self.target_size_spin = QSpinBox()
+        self.target_size_spin.setRange(0, 10000)
+        self.target_size_spin.setValue(0)
+        self.target_size_spin.setSpecialValueText("不限制")
+        target_size_layout.addWidget(self.target_size_spin)
+        target_size_layout.addWidget(QLabel("KB"))
+        compress_layout.addLayout(target_size_layout)
+
+        compress_hint = QLabel("💡 降低质量或设置目标大小可减小文件")
+        compress_hint.setStyleSheet("color: #666; font-size: 10pt;")
+        compress_layout.addWidget(compress_hint)
+
+        params_layout.addWidget(compress_group)
+
         loop_layout = QHBoxLayout()
         self.loop_check = QCheckBox("🔄 循环播放（添加反向帧）")
         self.loop_check.setChecked(True)
@@ -740,33 +778,80 @@ class MainWindow(QMainWindow):
             "",
             "WebP文件 (*.webp)"
         )
-        
+
         if not output_path:
             return
-        
+
         from PIL import Image
-        
+
         export_fps = self.output_fps
         frames = self.processed_frames
         original_count = len(frames)
-        
+        target_size_kb = self.target_size_spin.value()
+
         # 增加反向帧 (首尾相连循环)
         if self.loop_check.isChecked():
             reverse_frames = frames[::-1][1:]
             frames = frames + reverse_frames
-        
+
         pil_frames = [Image.fromarray(f, mode='RGBA') for f in frames]
-        
+
         duration = max(10, int(1000 / export_fps))
         actual_fps = 1000 / duration
-        
+
+        # 获取用户设置的质量值
+        base_quality = self.quality_slider.value()
+
+        # 如果设置了目标文件大小，进行迭代压缩
+        final_quality = base_quality
+        if target_size_kb > 0:
+            # 初步保存以估算文件大小
+            import tempfile
+            import os
+
+            # 使用较低质量快速估算
+            test_quality = max(10, base_quality // 2)
+
+            # 创建临时文件
+            with tempfile.NamedTemporaryFile(suffix='.webp', delete=False) as tmp:
+                tmp_path = tmp.name
+
+            try:
+                # 第一次保存
+                pil_frames[0].save(
+                    tmp_path,
+                    format='WebP',
+                    append_images=pil_frames[1:],
+                    save_all=True,
+                    duration=duration,
+                    loop=0,
+                    lossless=False,
+                    quality=test_quality,
+                    method=4
+                )
+
+                file_size = os.path.getsize(tmp_path) / 1024  # KB
+
+                # 如果文件太大，降低质量
+                if file_size > target_size_kb:
+                    # 计算需要的质量调整因子
+                    ratio = target_size_kb / file_size
+                    final_quality = max(5, min(100, int(test_quality * ratio)))
+                    final_quality = max(5, min(base_quality, final_quality))
+                else:
+                    final_quality = base_quality
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+
         print(f"导出 WebP 信息:")
         print(f"  原始帧数: {original_count}")
         print(f"  总帧数: {len(pil_frames)}")
         print(f"  设置帧率: {export_fps:.1f} FPS")
         print(f"  每帧时长: {duration} ms")
         print(f"  实际帧率: {actual_fps:.1f} FPS")
-        
+        print(f"  压缩质量: {final_quality}%")
+
         # 使用 Pillow 导出 WebP
         pil_frames[0].save(
             output_path,
@@ -776,11 +861,18 @@ class MainWindow(QMainWindow):
             duration=duration,
             loop=0,
             lossless=False,
-            quality=90,
+            quality=final_quality,
             method=4
         )
-        
-        QMessageBox.information(self, "成功", f"动态 WebP 已保存到:\n{output_path}\n帧率: {actual_fps:.1f} FPS\n每帧时长: {duration}ms")
+
+        # 获取实际文件大小
+        actual_size = os.path.getsize(output_path) / 1024
+
+        QMessageBox.information(self, "成功",
+            f"动态 WebP 已保存到:\n{output_path}\n"
+            f"帧率: {actual_fps:.1f} FPS | 每帧: {duration}ms\n"
+            f"压缩质量: {final_quality}% | 文件大小: {actual_size:.1f} KB"
+        )
         self._show_config_dialog(output_path)
     
     def _show_config_dialog(self, output_path: str):
