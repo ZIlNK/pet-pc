@@ -240,19 +240,16 @@ class VideoProcessor(QThread):
                     
                     if width != original_width or height != working_height:
                         rgba = cv2.resize(rgba, (width, height), interpolation=cv2.INTER_AREA)
-                        # 如果有缩放，水印透明区域需要再次确认 (虽然remove_green_screen里清空过，
-                        # 但resize可能会导致边缘半透明，再次涂掉更干净)
+                        # 原地处理水印区域（resize后无需再复制）
                         if scaled_watermarks:
-                            rgba_copy = rgba.copy()
                             for region in scaled_watermarks:
                                 x1, y1, x2, y2 = region
-                                rgba_copy[y1:y2, x1:x2, 3] = 0
-                            rgba = rgba_copy
-                    
+                                rgba[y1:y2, x1:x2, 3] = 0
+
                     original_bgr = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
-                    
+
                     self.frame_ready.emit(original_bgr, rgba)
-                    frames.append(rgba.copy())
+                    frames.append(rgba)  # 直接append，无需copy
                 
                 self.progress.emit(frame_count, min(end_frame - start_frame, total_frames - start_frame))
                 frame_count += 1
@@ -362,7 +359,9 @@ class MainWindow(QMainWindow):
         self.processed_frames = []
         self.output_fps = 30.0
         self.watermark_regions = []
-        
+        self.show_anchor_overlay = False  # 修复：定义未使用的变量
+        self.reference_info = {}  # 修复：定义未初始化的变量
+
         self._setup_ui()
         self._connect_signals()
     
