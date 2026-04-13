@@ -228,11 +228,8 @@ class DesktopPet(QWidget):
             if not flying_image_path.exists():
                 flying_image_path = self.assets_path / pet_config.flying_image
 
-            try:
-                # 直接使用原始路径，无需临时文件
-                flying_pixmap = QPixmap(str(flying_image_path))
-            except Exception:
-                flying_pixmap = QPixmap(str(flying_image_path))
+            # 直接使用原始路径加载
+            flying_pixmap = QPixmap(str(flying_image_path))
             self.flying_pixmap = flying_pixmap.scaled(
                 pet_config.size, pet_config.size,
                 Qt.AspectRatioMode.KeepAspectRatio,
@@ -250,11 +247,8 @@ class DesktopPet(QWidget):
             )
 
             flying_image_path = self.assets_path / pet_config.flying_image
-            try:
-                # 直接使用原始路径，无需临时文件
-                flying_pixmap = QPixmap(str(flying_image_path))
-            except Exception:
-                flying_pixmap = QPixmap(str(flying_image_path))
+            # 直接使用原始路径加载
+            flying_pixmap = QPixmap(str(flying_image_path))
             self.flying_pixmap = flying_pixmap.scaled(
                 pet_config.size, pet_config.size,
                 Qt.AspectRatioMode.KeepAspectRatio,
@@ -731,11 +725,8 @@ class DesktopPet(QWidget):
         if not flying_image_path.exists():
             flying_image_path = self.assets_path / pet_config.flying_image
 
-        try:
-            # 直接使用原始路径，无需临时文件
-            flying_pixmap = QPixmap(str(flying_image_path))
-        except Exception:
-            flying_pixmap = QPixmap(str(flying_image_path))
+        # 直接使用原始路径加载
+        flying_pixmap = QPixmap(str(flying_image_path))
         self.flying_pixmap = flying_pixmap.scaled(
             pet_config.size, pet_config.size,
             Qt.AspectRatioMode.KeepAspectRatio,
