@@ -148,4 +148,4 @@ class MotionModeController(QObject):
             self._pet.current_gif.stop()
 
     def resume_motion(self) -> None:
-        self._pet.state = self._pet.state.MOTION_MODE
+        self._pet._state_machine.start_motion_mode()

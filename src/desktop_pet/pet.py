@@ -8,6 +8,7 @@ from PyQt6.QtGui import QPixmap, QMovie, QAction
 from PyQt6.QtCore import Qt, QPoint, QTimer, QSize
 
 from .states import PetState
+from .state_machine import PetStateMachine
 from .utils import get_assets_path, get_pets_path
 from .config_manager import ConfigManager, ActionManager, ActionConfig, ClickZoneConfig
 from .action_manager_gui import ActionManagerGUI
@@ -40,7 +41,10 @@ class DesktopPet(QWidget):
 
         self.current_pet_package: PetPackage | None = None
 
-        self.state = PetState.IDLE
+        # 状态机管理
+        self._state_machine = PetStateMachine(self)
+        self.state = self._state_machine.state  # 兼容属性
+
         self.movement_timer = QTimer()
         self.movement_timer.timeout.connect(self.random_move)
         self.start_random_movement_timer()
@@ -106,6 +110,16 @@ class DesktopPet(QWidget):
 
         self._load_current_pet()
         self.initUI()
+
+    @property
+    def state(self) -> PetState:
+        """获取当前状态（兼容属性）"""
+        return self._state_machine.state
+
+    @state.setter
+    def state(self, value: PetState):
+        """设置状态（兼容属性，优先使用状态机方法）"""
+        self._state_machine.transition_to(value, force=True)
 
     def _load_current_pet(self) -> None:
         pet_name = self.config_manager.get_current_pet_name()
