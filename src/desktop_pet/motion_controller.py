@@ -1,4 +1,3 @@
-import random
 from typing import Optional
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer
 
