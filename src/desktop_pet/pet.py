@@ -141,6 +141,26 @@ class DesktopPet(QWidget):
             else:
                 logger.error("Failed to load any pet package")
 
+    def _load_pixmap(self, image_path: Path, default_path: Path, size: int) -> QPixmap:
+        """加载并缩放图片
+
+        Args:
+            image_path: 首选图片路径
+            default_path: 备用默认路径
+            size: 目标尺寸
+
+        Returns:
+            缩放后的 QPixmap
+        """
+        # 优先使用指定路径，否则回退到默认
+        target_path = image_path if image_path.exists() else default_path
+        pixmap = QPixmap(str(target_path))
+        return pixmap.scaled(
+            size, size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+
     def _load_pet_animations(self) -> None:
         if not self.current_pet_package:
             return
@@ -213,61 +233,21 @@ class DesktopPet(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
         pet_config = self.config_manager.pet
-        
+        default_regular = self.assets_path / pet_config.regular_image
+        default_flying = self.assets_path / pet_config.flying_image
+
         # 从当前 PetPackage 加载静态图片
         if self.current_pet_package:
             animations_dir = self.current_pet_package.animations_dir
-            
-            # 加载常规图片
-            regular_image_name = self.current_pet_package.meta.regular_image
-            regular_image_path = animations_dir / regular_image_name
-
-            # 如果资源包中没有指定图片，使用默认路径
-            if not regular_image_path.exists():
-                regular_image_path = self.assets_path / pet_config.regular_image
-
-            # 直接使用原始路径加载，无需 Image.open
-            regular_pixmap = QPixmap(str(regular_image_path))
-            self.regular_pixmap = regular_pixmap.scaled(
-                pet_config.size, pet_config.size,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
-
-            # 加载飞行图片
-            flying_image_name = self.current_pet_package.meta.flying_image
-            flying_image_path = animations_dir / flying_image_name
-
-            # 如果资源包中没有指定图片，使用默认路径
-            if not flying_image_path.exists():
-                flying_image_path = self.assets_path / pet_config.flying_image
-
-            # 直接使用原始路径加载
-            flying_pixmap = QPixmap(str(flying_image_path))
-            self.flying_pixmap = flying_pixmap.scaled(
-                pet_config.size, pet_config.size,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
+            regular_path = animations_dir / self.current_pet_package.meta.regular_image
+            flying_path = animations_dir / self.current_pet_package.meta.flying_image
         else:
-            # 回退到默认配置
-            regular_image_path = self.assets_path / pet_config.regular_image
-            # 直接使用原始路径加载，无需 Image.open
-            regular_pixmap = QPixmap(str(regular_image_path))
-            self.regular_pixmap = regular_pixmap.scaled(
-                pet_config.size, pet_config.size,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
+            regular_path = default_regular
+            flying_path = default_flying
 
-            flying_image_path = self.assets_path / pet_config.flying_image
-            # 直接使用原始路径加载
-            flying_pixmap = QPixmap(str(flying_image_path))
-            self.flying_pixmap = flying_pixmap.scaled(
-                pet_config.size, pet_config.size,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
+        # 使用统一的加载方法
+        self.regular_pixmap = self._load_pixmap(regular_path, default_regular, pet_config.size)
+        self.flying_pixmap = self._load_pixmap(flying_path, default_flying, pet_config.size)
 
         # 从当前资源包加载休息提醒动画
         if self.current_pet_package:
@@ -714,37 +694,21 @@ class DesktopPet(QWidget):
         self.config_manager.set_current_pet(pet_package.name)
 
         self._load_pet_animations()
-        
+
         # 重新加载静态图片
         pet_config = self.config_manager.pet
         animations_dir = self.current_pet_package.animations_dir
-        
-        # 加载常规图片
-        regular_image_name = self.current_pet_package.meta.regular_image
-        regular_image_path = animations_dir / regular_image_name
-        if not regular_image_path.exists():
-            regular_image_path = self.assets_path / pet_config.regular_image
+        default_regular = self.assets_path / pet_config.regular_image
+        default_flying = self.assets_path / pet_config.flying_image
 
-        # 直接使用原始路径，无需临时文件
-        regular_pixmap = QPixmap(str(regular_image_path))
-        self.regular_pixmap = regular_pixmap.scaled(
-            pet_config.size, pet_config.size,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
+        # 使用统一的加载方法
+        self.regular_pixmap = self._load_pixmap(
+            animations_dir / self.current_pet_package.meta.regular_image,
+            default_regular, pet_config.size
         )
-
-        # 加载飞行图片
-        flying_image_name = self.current_pet_package.meta.flying_image
-        flying_image_path = animations_dir / flying_image_name
-        if not flying_image_path.exists():
-            flying_image_path = self.assets_path / pet_config.flying_image
-
-        # 直接使用原始路径加载
-        flying_pixmap = QPixmap(str(flying_image_path))
-        self.flying_pixmap = flying_pixmap.scaled(
-            pet_config.size, pet_config.size,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
+        self.flying_pixmap = self._load_pixmap(
+            animations_dir / self.current_pet_package.meta.flying_image,
+            default_flying, pet_config.size
         )
 
         if self.current_gif and self.current_gif.state() == QMovie.MovieState.Running:
