@@ -738,7 +738,7 @@ class DesktopPet(QWidget):
 
         if mode == "random":
             self.movement_timer.stop()
-            if self.current_gif and self.current_gif.state() == 1:
+            if self.current_gif and self.current_gif.state() == QMovie.MovieState.Running:
                 self.current_gif.stop()
             self.switch_to_static()
             self.state = PetState.IDLE
@@ -804,7 +804,7 @@ class DesktopPet(QWidget):
         self.start_smooth_move(current_x, target_x, self.y())
 
     def _on_stop_animation_requested(self):
-        if self.current_gif and self.current_gif.state() == 1:
+        if self.current_gif and self.current_gif.state() == QMovie.MovieState.Running:
             self.current_gif.stop()
         self.switch_to_static()
         self.state = PetState.MOTION_MODE
