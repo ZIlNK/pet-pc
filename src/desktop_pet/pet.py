@@ -1,7 +1,6 @@
 import logging
 import random
 import asyncio
-import sys
 from pathlib import Path
 from PyQt6.QtWidgets import QApplication, QLabel, QWidget, QMenu, QDialog
 from PyQt6.QtGui import QPixmap, QMovie, QAction
