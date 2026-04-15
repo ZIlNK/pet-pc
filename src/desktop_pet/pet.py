@@ -3,7 +3,7 @@ import random
 import asyncio
 from pathlib import Path
 from PyQt6.QtWidgets import QApplication, QLabel, QWidget, QMenu, QDialog
-from PyQt6.QtGui import QPixmap, QMovie, QAction
+from PyQt6.QtGui import QPixmap, QMovie, QAction, QCursor
 from PyQt6.QtCore import Qt, QPoint, QTimer, QSize
 
 from .states import PetState
@@ -1021,6 +1021,8 @@ class DesktopPet(QWidget):
             self.execute_movement_action_from_pet(action)
         elif action.type == "animation":
             self.play_animation_action_from_pet(action)
+        elif action.type == "chase":
+            self.execute_chase_action(action)
         else:
             logger.warning(f"Unknown action type: {action.type}")
 
@@ -1052,6 +1054,69 @@ class DesktopPet(QWidget):
                 self.switch_to_gif('right')
 
             self.start_smooth_move(current_x, new_x, y)
+
+    def execute_chase_action(self, action: ActionConfig):
+        """追逐鼠标 action"""
+        if self.state != PetState.IDLE:
+            return
+
+        config = action.config
+        speed = config.get("speed", 3)
+        stop_distance = config.get("stop_distance", 50)
+        trigger_distance = config.get("trigger_distance", 300)
+
+        # 获取鼠标位置
+        mouse_pos = QCursor.pos()
+        pet_x = self.x()
+        pet_y = self.y()
+        pet_width = self.width()
+        pet_height = self.height()
+
+        # 计算宠物中心点
+        pet_center_x = pet_x + pet_width // 2
+        pet_center_y = pet_y + pet_height // 2
+
+        # 计算到鼠标的距离
+        dx = mouse_pos.x() - pet_center_x
+        dy = mouse_pos.y() - pet_center_y
+        distance = (dx ** 2 + dy ** 2) ** 0.5
+
+        # 检查是否在触发距离内
+        if distance > trigger_distance:
+            logger.debug(f"Mouse too far ({distance:.0f}px), skipping chase")
+            return
+
+        # 检查是否已到达停止距离
+        if distance <= stop_distance:
+            logger.debug(f"Reached target ({distance:.0f}px), stopping chase")
+            return
+
+        # 计算移动方向（归一化）
+        move_x = (dx / distance) * speed if distance > 0 else 0
+        move_y = (dy / distance) * speed if distance > 0 else 0
+
+        # 获取屏幕边界
+        screen = QApplication.primaryScreen()
+        screen_geometry = screen.availableGeometry()
+
+        # 计算新位置
+        new_x = pet_x + move_x
+        new_y = pet_y + move_y
+
+        # 边界检查
+        new_x = max(0, min(new_x, screen_geometry.width() - pet_width))
+        new_y = max(0, min(new_y, screen_geometry.height() - pet_height))
+
+        # 切换到对应的行走动画方向
+        if move_x > 0:
+            self.switch_to_gif('right')
+        else:
+            self.switch_to_gif('left')
+
+        # 执行移动
+        self.move(int(new_x), int(new_y))
+
+        logger.debug(f"Chasing mouse: distance={distance:.0f}px, moved to ({new_x}, {new_y})")
 
     def play_animation_action_from_pet(self, action):
         if self.state == PetState.REST_REMINDER:
