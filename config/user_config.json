@@ -92,6 +92,10 @@
           "height": 159
         }
       ]
+    },
+    "chase": {
+      "enabled": true,
+      "weight": 10
     }
   },
   "app": {
