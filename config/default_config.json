@@ -40,6 +40,17 @@
           "height": 159
         }
       ]
+    },
+    "chase": {
+      "enabled": false,
+      "weight": 2,
+      "type": "chase",
+      "description": "追逐鼠标",
+      "config": {
+        "speed": 3,
+        "stop_distance": 50,
+        "trigger_distance": 300
+      }
     }
   },
   "rest_reminder": {
@@ -71,7 +82,10 @@
     "enabled": true,
     "host": "0.0.0.0",
     "port": 8080,
-    "allowed_ips": ["127.0.0.1", "::1"]
+    "allowed_ips": [
+      "127.0.0.1",
+      "::1"
+    ]
   },
   "startup": {
     "enabled": false,
