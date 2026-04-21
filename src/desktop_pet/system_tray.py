@@ -100,40 +100,16 @@ class SystemTrayIcon(QSystemTrayIcon):
         self.menu = QMenu()
 
         # Show/Hide action
-        self.show_hide_action = QAction("显示/隐藏", self.menu)
+        self.show_hide_action = QAction("显示桌宠", self.menu)
         self.show_hide_action.triggered.connect(self.toggle_pet_visibility)
         self.menu.addAction(self.show_hide_action)
 
         self.menu.addSeparator()
 
-        # Mode switching
-        mode_menu = QMenu("运动模式", self.menu)
-
-        self.random_mode_action = QAction("随机模式", mode_menu)
-        self.random_mode_action.triggered.connect(self._switch_to_random_mode)
-        mode_menu.addAction(self.random_mode_action)
-
-        self.motion_mode_action = QAction("运动模式", mode_menu)
-        self.motion_mode_action.triggered.connect(self._switch_to_motion_mode)
-        mode_menu.addAction(self.motion_mode_action)
-
-        self.menu.addMenu(mode_menu)
-
-        self.menu.addSeparator()
-
-        # Action manager
-        self.action_manager_action = QAction("动作管理", self.menu)
-        self.action_manager_action.triggered.connect(self._open_action_manager)
-        self.menu.addAction(self.action_manager_action)
-
-        self.menu.addSeparator()
-
-        # Startup option
-        self.startup_action = QAction("开机自启动", self.menu)
-        self.startup_action.setCheckable(True)
-        self.startup_action.setChecked(is_startup_enabled())
-        self.startup_action.triggered.connect(self._toggle_startup)
-        self.menu.addAction(self.startup_action)
+        # Open settings center
+        open_settings_action = QAction("打开设置中心", self.menu)
+        open_settings_action.triggered.connect(self._open_settings_center)
+        self.menu.addAction(open_settings_action)
 
         self.menu.addSeparator()
 
@@ -143,6 +119,12 @@ class SystemTrayIcon(QSystemTrayIcon):
         self.menu.addAction(self.exit_action)
 
         self.setContextMenu(self.menu)
+
+    def _open_settings_center(self):
+        """Open the settings center dialog."""
+        from .settings_center import SettingsCenter
+        settings_center = SettingsCenter(self.config_manager, self.pet_loader, self)
+        settings_center.exec()
 
     def _connect_signals(self):
         """Connect internal signals."""

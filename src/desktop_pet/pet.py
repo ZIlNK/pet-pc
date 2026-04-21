@@ -628,64 +628,30 @@ class DesktopPet(QWidget):
     def contextMenuEvent(self, event):
         context_menu = QMenu(self)
 
-        switch_pet_menu = QMenu('切换桌宠', self)
-        available_pets = self.pet_loader.scan_pets()
-        for pet in available_pets:
-            pet_action = QAction(pet.meta.name, self)
-            pet_action.triggered.connect(lambda checked, p=pet: self._switch_to_pet(p))
-            switch_pet_menu.addAction(pet_action)
-        context_menu.addMenu(switch_pet_menu)
-
-        context_menu.addSeparator()
-
-        motion_mode_menu = QMenu('运动模式', self)
-
-        current_mode = self.motion_controller.get_mode()
-        if current_mode == "random":
-            switch_to_motion_action = QAction('切换到运动模式', self)
-            switch_to_motion_action.triggered.connect(self._switch_to_motion_mode)
-            motion_mode_menu.addAction(switch_to_motion_action)
-        else:
-            switch_to_random_action = QAction('切换到随机模式', self)
-            switch_to_random_action.triggered.connect(self._switch_to_random_mode)
-            motion_mode_menu.addAction(switch_to_random_action)
-
-        open_control_panel_action = QAction('打开控制面板', self)
-        open_control_panel_action.triggered.connect(self._open_motion_control_panel)
-        motion_mode_menu.addAction(open_control_panel_action)
-
-        motion_mode_menu.addSeparator()
-
-        if self.api_server.is_running:
-            stop_api_action = QAction('停止 API 服务器', self)
-            stop_api_action.triggered.connect(self._stop_api_server)
-            motion_mode_menu.addAction(stop_api_action)
-        else:
-            start_api_action = QAction('启动 API 服务器', self)
-            start_api_action.triggered.connect(self._start_api_server)
-            motion_mode_menu.addAction(start_api_action)
-
-        context_menu.addMenu(motion_mode_menu)
-
-        context_menu.addSeparator()
-
-        action_manager_action = QAction('动作管理', self)
-        action_manager_action.triggered.connect(self.open_action_manager)
-        context_menu.addAction(action_manager_action)
+        # Open settings center
+        open_settings_action = QAction("打开设置中心", self)
+        open_settings_action.triggered.connect(self._open_settings_center)
+        context_menu.addAction(open_settings_action)
 
         context_menu.addSeparator()
 
         # Minimize to tray option (if tray is enabled)
         if hasattr(self, '_tray_icon') and self._tray_icon and self.config_manager.tray.enabled:
-            minimize_to_tray_action = QAction('最小化到托盘', self)
+            minimize_to_tray_action = QAction("最小化到托盘", self)
             minimize_to_tray_action.triggered.connect(self._minimize_to_tray)
             context_menu.addAction(minimize_to_tray_action)
 
-        exit_action = QAction('退出', self)
+        exit_action = QAction("退出", self)
         exit_action.triggered.connect(self.exit_app)
         context_menu.addAction(exit_action)
 
         context_menu.exec(event.globalPos())
+
+    def _open_settings_center(self):
+        """Open the settings center dialog."""
+        from .settings_center import SettingsCenter
+        settings_center = SettingsCenter(self.config_manager, self.pet_loader, self)
+        settings_center.exec()
 
     def _switch_to_pet(self, pet_package: PetPackage) -> None:
         self.current_pet_package = pet_package
