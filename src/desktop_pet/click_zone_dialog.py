@@ -501,7 +501,44 @@ class ClickZoneConfigDialog(QDialog):
     def load_current_zones(self):
         self.zones.clear()
 
-        if self.config_manager:
+        # 首先从 pet_package 的 click_zones.json 加载（包含位置信息）
+        if self.pet_package:
+            click_zones_path = self.pet_package.config_dir / "click_zones.json"
+            if click_zones_path.exists():
+                try:
+                    with open(click_zones_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        zones_data = data.get("zones", [])
+                        for zone_data in zones_data:
+                            zone = ClickZoneConfig(
+                                name=zone_data.get("name", ""),
+                                x=zone_data.get("x", 0.0),
+                                y=zone_data.get("y", 0.0),
+                                width=zone_data.get("width", 0.2),
+                                height=zone_data.get("height", 0.2),
+                                action=zone_data.get("action", "")
+                            )
+                            self.zones.append(zone)
+                except (json.JSONDecodeError, IOError):
+                    pass
+
+            # 如果 click_zones.json 不存在，尝试从 zone_actions 加载（向后兼容）
+            if not self.zones:
+                for action in self.pet_package.actions:
+                    if action.zone_actions:
+                        for zone_name, zone_action in action.zone_actions.items():
+                            zone = ClickZoneConfig(
+                                name=zone_name,
+                                x=0.0,
+                                y=0.0,
+                                width=0.2,
+                                height=0.2,
+                                action=zone_action
+                            )
+                            self.zones.append(zone)
+
+        # 如果 pet_package 没有配置，则从全局配置加载（向后兼容）
+        if not self.zones and self.config_manager:
             click_detection = self.config_manager.config.get("click_detection", {})
             zones_data = click_detection.get("zones", [])
             for zone_data in zones_data:
@@ -514,19 +551,6 @@ class ClickZoneConfigDialog(QDialog):
                     action=zone_data.get("action", "")
                 )
                 self.zones.append(zone)
-        elif self.pet_package:
-            for action in self.pet_package.actions:
-                if action.zone_actions:
-                    for zone_name, zone_action in action.zone_actions.items():
-                        zone = ClickZoneConfig(
-                            name=zone_name,
-                            x=0.0,
-                            y=0.0,
-                            width=0.2,
-                            height=0.2,
-                            action=zone_action
-                        )
-                        self.zones.append(zone)
 
         self.overlay.zones = self.zones
         self.update_zone_list()
@@ -679,16 +703,38 @@ class ClickZoneConfigDialog(QDialog):
         try:
             import json
 
-            if self.config_manager:
-                user_config_path = self.config_manager.user_config_path
-                existing_config = {}
-                if user_config_path.exists():
-                    try:
-                        with open(user_config_path, "r", encoding="utf-8") as f:
-                            existing_config = json.load(f)
-                    except (json.JSONDecodeError, IOError):
-                        pass
+            # Update zone_actions in pet package actions
+            for action in self.pet_package.actions:
+                action.zone_actions.clear()
 
+            actions_by_name = {a.name: a for a in self.pet_package.actions}
+
+            for zone in self.zones:
+                if zone.action and zone.action in actions_by_name:
+                    # Store zone config: name -> action mapping
+                    actions_by_name[zone.action].zone_actions[zone.name] = zone.action
+
+            # Save actions.json
+            actions_path = self.pet_package.config_dir / "actions.json"
+            actions_data = []
+            for action in self.pet_package.actions:
+                action_dict = {
+                    "name": action.name,
+                    "type": action.type,
+                    "weight": action.weight,
+                    "animation_files": action.animation_files,
+                    "enabled": action.enabled,
+                    "config": action.config,
+                    "zone_actions": action.zone_actions
+                }
+                actions_data.append(action_dict)
+
+                data = {"actions": actions_data}
+                with open(actions_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+
+                # Save click zones with positions to separate file
+                click_zones_path = self.pet_package.config_dir / "click_zones.json"
                 zones_data = []
                 for zone in self.zones:
                     zones_data.append({
@@ -699,42 +745,8 @@ class ClickZoneConfigDialog(QDialog):
                         "height": zone.height,
                         "action": zone.action
                     })
-
-                existing_config["click_detection"] = {
-                    "enabled": existing_config.get("click_detection", {}).get("enabled", False),
-                    "zones": zones_data
-                }
-
-                with open(user_config_path, "w", encoding="utf-8") as f:
-                    json.dump(existing_config, f, ensure_ascii=False, indent=2)
-                return True
-            else:
-                for action in self.pet_package.actions:
-                    action.zone_actions.clear()
-
-                actions_by_name = {a.name: a for a in self.pet_package.actions}
-
-                for zone in self.zones:
-                    if zone.action and zone.action in actions_by_name:
-                        actions_by_name[zone.action].zone_actions[zone.name] = zone.action
-
-                actions_path = self.pet_package.config_dir / "actions.json"
-                actions_data = []
-                for action in self.pet_package.actions:
-                    action_dict = {
-                        "name": action.name,
-                        "type": action.type,
-                        "weight": action.weight,
-                        "animation_files": action.animation_files,
-                        "enabled": action.enabled,
-                        "config": action.config,
-                        "zone_actions": action.zone_actions
-                    }
-                    actions_data.append(action_dict)
-
-                data = {"actions": actions_data}
-                with open(actions_path, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
+                with open(click_zones_path, "w", encoding="utf-8") as f:
+                    json.dump({"zones": zones_data}, f, ensure_ascii=False, indent=2)
 
                 return True
         except Exception as e:

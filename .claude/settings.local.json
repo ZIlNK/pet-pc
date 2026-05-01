@@ -14,7 +14,12 @@
       "Bash(git -C D:/code/pet-pc commit -m \"feat\\(setup\\): add tab UI for quick create and advanced import\")",
       "Bash(git -C D:/code/pet-pc commit -m \"feat\\(setup\\): implement quick create logic\")",
       "Bash(git -C D:/code/pet-pc add .)",
-      "Bash(git -C D:/code/pet-pc status)"
+      "Bash(git -C D:/code/pet-pc status)",
+      "Bash(git:*)",
+      "Bash(wc -l src/desktop_pet/*.py)",
+      "Bash(python:*)",
+      "Bash(C:\\\\Users\\\\Ziink\\\\.claude\\\\plugins\\\\cache\\\\claude-plugins-official\\\\superpowers\\\\5.0.7\\\\scripts\\\\start-server.sh *)",
+      "Skill(gsd:debug)"
     ]
   }
 }

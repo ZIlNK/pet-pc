@@ -9,13 +9,14 @@ from PyQt6.QtWidgets import (
     QPushButton, QScrollArea, QGroupBox, QFormLayout,
     QLineEdit, QSpinBox, QCheckBox, QTableWidget,
     QTableWidgetItem, QHeaderView, QFileDialog,
-    QMessageBox, QAbstractItemView, QComboBox
+    QMessageBox, QAbstractItemView, QComboBox, QDialog
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QPixmap
 
 from ..pet_loader import PetPackage, PetAction
 from ..action_manager_gui import AnimationSelectDialog, ActionEditDialog
+from ..click_zone_dialog import ClickZoneConfigDialog
 
 
 class PetConfigPage(QWidget):
@@ -257,6 +258,43 @@ class PetConfigPage(QWidget):
 
         scroll_layout.addWidget(actions_group)
 
+        # Click detection configuration group
+        click_detection_group = QGroupBox("点击检测配置")
+        click_detection_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                font-size: 14px;
+                margin-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+            }
+        """)
+        click_detection_layout = QVBoxLayout(click_detection_group)
+
+        self.click_zone_count_label = QLabel("当前配置: 0 个点击区域")
+        click_detection_layout.addWidget(self.click_zone_count_label)
+
+        click_zone_btn = QPushButton("配置点击区域")
+        click_zone_btn.setStyleSheet("""
+            QPushButton {
+                background: #0078d4;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background: #005a9e;
+            }
+        """)
+        click_zone_btn.clicked.connect(self.configure_click_zones)
+        click_detection_layout.addWidget(click_zone_btn)
+
+        scroll_layout.addWidget(click_detection_group)
+
         scroll.setWidget(scroll_content)
         layout.addWidget(scroll)
 
@@ -334,10 +372,85 @@ class PetConfigPage(QWidget):
             self.actions_table.setItem(row, 3, QTableWidgetItem(str(action.weight)))
             self.actions_table.setItem(row, 4, QTableWidgetItem("是" if action.enabled else "否"))
 
+            # Add edit and delete buttons in 操作 column
+            edit_btn = QPushButton("编辑")
+            edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            edit_btn.setStyleSheet("""
+                QPushButton {
+                    background: #0078d4;
+                    color: white;
+                    border: none;
+                    padding: 4px 8px;
+                    border-radius: 3px;
+                }
+                QPushButton:hover {
+                    background: #005a9e;
+                }
+            """)
+            edit_btn.clicked.connect(lambda checked, a=action: self.edit_action(a))
+
+            delete_btn = QPushButton("删除")
+            delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            delete_btn.setStyleSheet("""
+                QPushButton {
+                    background: #d9534f;
+                    color: white;
+                    border: none;
+                    padding: 4px 8px;
+                    border-radius: 3px;
+                }
+                QPushButton:hover {
+                    background: #c9302c;
+                }
+            """)
+            delete_btn.clicked.connect(lambda checked, a=action: self.delete_action(a))
+
+            btn_widget = QWidget()
+            btn_layout = QHBoxLayout(btn_widget)
+            btn_layout.addWidget(edit_btn)
+            btn_layout.addWidget(delete_btn)
+            btn_layout.setContentsMargins(2, 0, 2, 0)
+            btn_layout.setSpacing(4)
+            self.actions_table.setCellWidget(row, 5, btn_widget)
+
+        # Update click zone count
+        click_zone_count = self._get_click_zone_count()
+        self.click_zone_count_label.setText(f"当前配置: {click_zone_count} 个点击区域")
+
+    def _get_click_zone_count(self) -> int:
+        """Get the number of configured click zones from actions or global config."""
+        count = 0
+
+        # First check pet package zone_actions
+        for action in self.pet_package.actions:
+            if action.zone_actions:
+                count += len(action.zone_actions)
+
+        # If no zones in pet package, check global config
+        if count == 0 and self.config_manager:
+            click_detection = self.config_manager.config.get("click_detection", {})
+            zones_data = click_detection.get("zones", [])
+            count = len(zones_data)
+
+        return count
+
+    def configure_click_zones(self):
+        """Open click zone configuration dialog."""
+        dialog = ClickZoneConfigDialog(
+            self.pet_package,
+            self.config_manager,
+            self
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            dialog.save_to_pet_package()
+            click_zone_count = self._get_click_zone_count()
+            self.click_zone_count_label.setText(f"当前配置: {click_zone_count} 个点击区域")
+            QMessageBox.information(self, "配置成功", "点击区域配置已保存，重启应用后生效。")
+
     def select_image(self, image_type):
         """Select image for specific type."""
         dialog = AnimationSelectDialog(self.pet_package, self)
-        if dialog.exec() == dialog.Accepted:
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             files = dialog.get_selected_files()
             if files:
                 filename = files[0]
@@ -354,7 +467,7 @@ class PetConfigPage(QWidget):
     def select_walk_animation(self, direction):
         """Select walk animation for direction."""
         dialog = AnimationSelectDialog(self.pet_package, self)
-        if dialog.exec() == dialog.Accepted:
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             files = dialog.get_selected_files()
             if files:
                 filename = files[0]
@@ -395,9 +508,30 @@ class PetConfigPage(QWidget):
         """Add new action."""
         existing_names = [a.name for a in self.pet_package.actions]
         dialog = ActionEditDialog(self.pet_package, self, existing_names=existing_names)
-        if dialog.exec() == dialog.Accepted:
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             action = dialog.get_action()
             self.pet_package.actions.append(action)
+            self.load_pet_data()
+
+    def edit_action(self, action: PetAction):
+        """Edit existing action."""
+        dialog = ActionEditDialog(self.pet_package, self, action=action)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            updated = dialog.get_action()
+            action.weight = updated.weight
+            action.enabled = updated.enabled
+            action.animation_files = updated.animation_files
+            action.config = updated.config
+            self.load_pet_data()
+
+    def delete_action(self, action: PetAction):
+        """Delete an action."""
+        reply = QMessageBox.question(
+            self, "确认删除", f"确定要删除动作 '{action.name}' 吗?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.pet_package.actions = [a for a in self.pet_package.actions if a.name != action.name]
             self.load_pet_data()
 
     def save_config(self):
@@ -428,7 +562,8 @@ class PetConfigPage(QWidget):
                         "weight": a.weight,
                         "animation_files": a.animation_files,
                         "enabled": a.enabled,
-                        "config": a.config
+                        "config": a.config,
+                        "zone_actions": a.zone_actions
                     }
                     for a in self.pet_package.actions
                 ]

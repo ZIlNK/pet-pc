@@ -129,6 +129,7 @@ class DesktopPet(QWidget):
             self.pet_loader.set_current_pet(pet_package)
             logger.info(f"Loaded pet package: {pet_package.meta.name}")
             self._load_pet_animations()
+            self.load_click_zones_from_pet()
         else:
             logger.warning(f"Failed to load pet package: {pet_name}, trying default package")
             pet_package = self.pet_loader.load_pet("default")
@@ -137,6 +138,7 @@ class DesktopPet(QWidget):
                 self.pet_loader.set_current_pet(pet_package)
                 logger.info(f"Loaded default pet package: {pet_package.meta.name}")
                 self._load_pet_animations()
+                self.load_click_zones_from_pet()
             else:
                 logger.error("Failed to load any pet package")
 
@@ -220,6 +222,50 @@ class DesktopPet(QWidget):
 
     def set_click_zones(self, zones: list[ClickZoneConfig]) -> None:
         self._click_zones = zones
+
+    def load_click_zones_from_pet(self) -> None:
+        """Load click zones from current pet package."""
+        self._click_zones.clear()
+
+        if not self.current_pet_package:
+            return
+
+        import json
+
+        # First try to load from click_zones.json (includes positions)
+        click_zones_path = self.current_pet_package.config_dir / "click_zones.json"
+        if click_zones_path.exists():
+            try:
+                with open(click_zones_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    zones_data = data.get("zones", [])
+                    for zone_data in zones_data:
+                        zone = ClickZoneConfig(
+                            name=zone_data.get("name", ""),
+                            x=zone_data.get("x", 0.0),
+                            y=zone_data.get("y", 0.0),
+                            width=zone_data.get("width", 0.2),
+                            height=zone_data.get("height", 0.2),
+                            action=zone_data.get("action", "")
+                        )
+                        self._click_zones.append(zone)
+                return  # Successfully loaded, no need to fallback
+            except (json.JSONDecodeError, IOError):
+                pass
+
+        # Fallback: load from zone_actions (without positions)
+        for action in self.current_pet_package.actions:
+            if action.zone_actions:
+                for zone_name, action_name in action.zone_actions.items():
+                    zone = ClickZoneConfig(
+                        name=zone_name,
+                        x=0.0,
+                        y=0.0,
+                        width=0.2,
+                        height=0.2,
+                        action=action_name
+                    )
+                    self._click_zones.append(zone)
 
     def initUI(self):
         self.setWindowFlags(
@@ -650,7 +696,7 @@ class DesktopPet(QWidget):
     def _open_settings_center(self):
         """Open the settings center dialog."""
         from .settings_center import SettingsCenter
-        settings_center = SettingsCenter(self.config_manager, self.pet_loader, self)
+        settings_center = SettingsCenter(self.config_manager, self.pet_loader, self, self)
         settings_center.exec()
 
     def _switch_to_pet(self, pet_package: PetPackage) -> None:
@@ -659,6 +705,7 @@ class DesktopPet(QWidget):
         self.config_manager.set_current_pet(pet_package.name)
 
         self._load_pet_animations()
+        self.load_click_zones_from_pet()  # Load click zones for new pet
 
         # 重新加载静态图片
         pet_config = self.config_manager.pet

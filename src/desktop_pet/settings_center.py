@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
-from .settings_pages import PetListPage, PetConfigPage, GlobalSettingsPage
+from .settings_pages import PetListPage, PetConfigPage, GlobalSettingsPage, ActionControlPage
 
 logger = logging.getLogger(__name__)
 
@@ -17,10 +17,11 @@ logger = logging.getLogger(__name__)
 class SettingsCenter(QDialog):
     """Main settings center dialog with navigation."""
 
-    def __init__(self, config_manager, pet_loader, parent=None):
+    def __init__(self, config_manager, pet_loader, pet=None, parent=None):
         super().__init__(parent)
         self.config_manager = config_manager
         self.pet_loader = pet_loader
+        self.pet = pet
         self.current_pet_package = None
         self.pet_config_page = None
 
@@ -56,6 +57,12 @@ class SettingsCenter(QDialog):
             self
         )
         self.content_stack.addWidget(self.global_settings_page)
+
+        # Action control page
+        if self.pet:
+            self.action_control_page = ActionControlPage(self.pet, self)
+            self.content_stack.addWidget(self.action_control_page)
+            self.action_nav_btn.setEnabled(True)
 
         # Pet config page will be added when needed
 
@@ -127,6 +134,32 @@ class SettingsCenter(QDialog):
         """)
         nav_layout.addWidget(self.global_nav_btn)
 
+        # Action control nav button
+        self.action_nav_btn = QPushButton("🎬 动作控制")
+        self.action_nav_btn.setCheckable(True)
+        self.action_nav_btn.setStyleSheet("""
+            QPushButton {
+                text-align: left;
+                padding: 12px 15px;
+                border: none;
+                background: transparent;
+                font-size: 14px;
+                color: #333;
+                border-radius: 8px;
+            }
+            QPushButton:checked {
+                background: #e3f2fd;
+                border-left: 3px solid #0078d4;
+                font-weight: bold;
+                color: #0078d4;
+            }
+            QPushButton:hover {
+                background: #e8e8e8;
+            }
+        """)
+        self.action_nav_btn.setEnabled(False)  # Disabled until pet is set
+        nav_layout.addWidget(self.action_nav_btn)
+
         nav_layout.addStretch()
 
         return nav_widget
@@ -135,6 +168,7 @@ class SettingsCenter(QDialog):
         """Connect navigation signals."""
         self.pet_nav_btn.clicked.connect(self.show_pet_page)
         self.global_nav_btn.clicked.connect(self.show_global_settings_page)
+        self.action_nav_btn.clicked.connect(self.show_action_control_page)
 
         # Connect pet list page signals
         self.pet_list_page.pet_selected.connect(self.on_pet_selected)
@@ -145,13 +179,25 @@ class SettingsCenter(QDialog):
         """Show pet list page."""
         self.pet_nav_btn.setChecked(True)
         self.global_nav_btn.setChecked(False)
+        self.action_nav_btn.setChecked(False)
         self.content_stack.setCurrentWidget(self.pet_list_page)
 
     def show_global_settings_page(self):
         """Show global settings page."""
         self.global_nav_btn.setChecked(True)
         self.pet_nav_btn.setChecked(False)
+        self.action_nav_btn.setChecked(False)
         self.content_stack.setCurrentWidget(self.global_settings_page)
+
+    def show_action_control_page(self):
+        """Show action control page."""
+        if not self.pet:
+            return
+        self.action_nav_btn.setChecked(True)
+        self.pet_nav_btn.setChecked(False)
+        self.global_nav_btn.setChecked(False)
+        self.content_stack.setCurrentWidget(self.action_control_page)
+        self.action_control_page.refresh_all()
 
     def on_pet_selected(self, pet_package):
         """Handle pet selection - enter config mode."""
