@@ -19,7 +19,8 @@ D:/code/pet-pc/
 │       ├── config_manager.py # Configuration loading/merging
 │       ├── pet_loader.py    # Pet package loading
 │       ├── motion_controller.py # Signal-based motion control
-│       ├── api_server.py    # aiohttp HTTP server
+│       ├── api_server.py    # aiohttp HTTP server + AI tool-calling
+│       ├── mcp_server.py    # MCP protocol server (stdio, dynamic discovery)
 │       ├── states.py        # PetState enum
 │       ├── utils.py         # Path resolution utilities
 │       ├── system_tray.py   # System tray integration

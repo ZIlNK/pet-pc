@@ -1,0 +1,27 @@
+{
+  "name": "@local/pet-bubble",
+  "version": "0.1.0",
+  "description": "OpenClaw Pet Bubble channel — receives desktop pet chat messages",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "scripts": {
+    "build": "echo 'No build step (pure ESM)'"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.6.1"
+  },
+  "openclaw": {
+    "extensions": ["./index.js"],
+    "setupEntry": "./setup-entry.js",
+    "runtimeSetupEntry": "./setup-entry.js",
+    "channel": {
+      "id": "pet-bubble",
+      "label": "Desktop Pet Bubble",
+      "docsPath": "/channels/pet-bubble",
+      "blurb": "Local channel for Desktop Pet GUI chat bubble messages."
+    }
+  }
+}

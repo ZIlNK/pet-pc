@@ -106,6 +106,29 @@ class SystemTrayIcon(QSystemTrayIcon):
 
         self.menu.addSeparator()
 
+        self.pause_action = QAction("Pause actions", self.menu)
+        self.pause_action.setCheckable(True)
+        self.pause_action.triggered.connect(self._toggle_pause)
+        self.menu.addAction(self.pause_action)
+
+        self.rest_reminder_action = QAction("Rest reminder", self.menu)
+        self.rest_reminder_action.setCheckable(True)
+        self.rest_reminder_action.setChecked(self.config_manager.rest_reminder.enabled)
+        self.rest_reminder_action.triggered.connect(self._toggle_rest_reminder)
+        self.menu.addAction(self.rest_reminder_action)
+
+        self.menu.addSeparator()
+
+        random_mode_action = QAction("Automatic mode", self.menu)
+        random_mode_action.triggered.connect(self._switch_to_random_mode)
+        self.menu.addAction(random_mode_action)
+
+        motion_mode_action = QAction("Control mode", self.menu)
+        motion_mode_action.triggered.connect(self._switch_to_motion_mode)
+        self.menu.addAction(motion_mode_action)
+
+        self.menu.addSeparator()
+
         # Open settings center
         open_settings_action = QAction("打开设置中心", self.menu)
         open_settings_action.triggered.connect(self._open_settings_center)
@@ -123,7 +146,7 @@ class SystemTrayIcon(QSystemTrayIcon):
     def _open_settings_center(self):
         """Open the settings center dialog."""
         from .settings_center import SettingsCenter
-        settings_center = SettingsCenter(self.config_manager, self.pet_loader, self)
+        settings_center = SettingsCenter(self.config_manager, self.pet.pet_loader, self.pet, self)
         settings_center.exec()
 
     def _connect_signals(self):
@@ -176,6 +199,31 @@ class SystemTrayIcon(QSystemTrayIcon):
     def _open_action_manager(self):
         """Open the action manager dialog."""
         self.pet.open_action_manager()
+
+    def _toggle_pause(self, checked: bool):
+        """Pause or resume automatic pet activity."""
+        if checked:
+            if hasattr(self.pet, 'movement_timer'):
+                self.pet.movement_timer.stop()
+            if self.pet.current_gif and self.pet.current_gif.state() == 1:
+                self.pet.current_gif.stop()
+            self.pause_action.setText("Resume actions")
+        else:
+            if self.pet.motion_controller.get_mode() == "random":
+                self.pet.start_random_movement_timer()
+            self.pause_action.setText("Pause actions")
+
+    def _toggle_rest_reminder(self, checked: bool):
+        """Enable or disable rest reminders from the tray."""
+        self.config_manager.save_global_settings({
+            "rest_reminder": {"enabled": checked}
+        })
+        if hasattr(self.pet, 'rest_timer'):
+            if checked:
+                interval = self.config_manager.rest_reminder.interval_minutes * 60 * 1000
+                self.pet.rest_timer.start(interval)
+            else:
+                self.pet.rest_timer.stop()
 
     def _toggle_startup(self, checked: bool):
         """Toggle Windows startup setting.

@@ -10,13 +10,17 @@ class MotionModeController(QObject):
     movement_finished = pyqtSignal(tuple)
     animation_started = pyqtSignal(str)
     animation_finished = pyqtSignal(str)
-    move_to_requested = pyqtSignal(int, int)
+    # 第三个参数:目标屏幕索引,None 表示按绝对坐标自动选屏
+    move_to_requested = pyqtSignal(int, int, object)
     move_by_requested = pyqtSignal(int, int)
-    move_to_edge_requested = pyqtSignal(str)
+    # 第二个参数:目标屏幕索引,None 表示当前屏
+    move_to_edge_requested = pyqtSignal(str, object)
     play_animation_requested = pyqtSignal(str)
-    play_walk_requested = pyqtSignal(str)
+    # 第二个参数:目标屏幕索引,None 表示当前屏
+    play_walk_requested = pyqtSignal(str, object)
     stop_animation_requested = pyqtSignal()
     set_mode_requested = pyqtSignal(str)
+    screen_changed = pyqtSignal(int)
 
     def __init__(self, pet):
         super().__init__()
@@ -36,19 +40,22 @@ class MotionModeController(QObject):
         if self._mode == mode:
             return True
 
-        self._notify_mode_changed(self._mode, mode)
-        self.mode_changed.emit(self._mode, mode)
+        old_mode = self._mode
+        self._mode = mode
+
+        self._notify_mode_changed(old_mode, mode)
+        self.mode_changed.emit(old_mode, mode)
         self.set_mode_requested.emit(mode)
         return True
 
     def get_mode(self) -> str:
         return self._mode
 
-    def move_to(self, x: int, y: int) -> bool:
+    def move_to(self, x: int, y: int, screen_index: int | None = None) -> bool:
         if self._mode != "motion":
             return False
 
-        self.move_to_requested.emit(x, y)
+        self.move_to_requested.emit(x, y, screen_index)
         return True
 
     def move_by(self, dx: int, dy: int) -> bool:
@@ -58,11 +65,11 @@ class MotionModeController(QObject):
         self.move_by_requested.emit(dx, dy)
         return True
 
-    def move_to_edge(self, edge: str) -> bool:
+    def move_to_edge(self, edge: str, screen_index: int | None = None) -> bool:
         if self._mode != "motion":
             return False
 
-        self.move_to_edge_requested.emit(edge)
+        self.move_to_edge_requested.emit(edge, screen_index)
         return True
 
     def play_animation(self, name: str) -> bool:
@@ -84,14 +91,14 @@ class MotionModeController(QObject):
         self.play_animation_requested.emit(name)
         return True
 
-    def play_walk(self, direction: str) -> bool:
+    def play_walk(self, direction: str, screen_index: int | None = None) -> bool:
         if self._mode != "motion":
             return False
 
         if direction not in ("left", "right"):
             return False
 
-        self.play_walk_requested.emit(direction)
+        self.play_walk_requested.emit(direction, screen_index)
         return True
 
     def stop_animation(self) -> bool:
@@ -102,7 +109,19 @@ class MotionModeController(QObject):
         return True
 
     def get_position(self) -> dict:
-        return {"x": self._pet.x(), "y": self._pet.y()}
+        screen_index = -1
+        try:
+            sm = getattr(self._pet, "screen_manager", None)
+            if sm is not None:
+                info = sm.screen_for_widget(self._pet)
+                screen_index = info.index if info is not None else -1
+        except Exception:
+            screen_index = -1
+        return {
+            "x": self._pet.x(),
+            "y": self._pet.y(),
+            "screen": screen_index,
+        }
 
     def get_state(self) -> str:
         return self._pet.state.value

@@ -14,6 +14,32 @@ from .settings_pages import PetListPage, PetConfigPage, GlobalSettingsPage, Acti
 logger = logging.getLogger(__name__)
 
 
+NAV_BUTTON_STYLE = """
+    QPushButton {
+        text-align: left;
+        padding: 11px 14px;
+        border: none;
+        background: transparent;
+        font-size: 14px;
+        color: #d9e1df;
+        border-radius: 8px;
+        font-weight: 500;
+    }
+    QPushButton:checked {
+        background: #f2c572;
+        color: #17201d;
+        font-weight: 700;
+    }
+    QPushButton:hover:!checked {
+        background: rgba(255,255,255,0.08);
+        color: #ffffff;
+    }
+    QPushButton:disabled {
+        color: rgba(217,225,223,0.35);
+    }
+"""
+
+
 class SettingsCenter(QDialog):
     """Main settings center dialog with navigation."""
 
@@ -25,8 +51,17 @@ class SettingsCenter(QDialog):
         self.current_pet_package = None
         self.pet_config_page = None
 
-        self.setWindowTitle("桌面宠物设置中心")
-        self.setMinimumSize(900, 650)
+        self.setWindowTitle("桌面宠物设置")
+        self.setMinimumSize(980, 720)
+        self.setStyleSheet("""
+            QDialog {
+                background: #f5f7f4;
+                color: #24312d;
+            }
+            QStackedWidget {
+                background: #f5f7f4;
+            }
+        """)
         self.setup_ui()
         self.connect_signals()
 
@@ -54,6 +89,7 @@ class SettingsCenter(QDialog):
         # Global settings page
         self.global_settings_page = GlobalSettingsPage(
             self.config_manager,
+            self.pet,
             self
         )
         self.content_stack.addWidget(self.global_settings_page)
@@ -71,92 +107,43 @@ class SettingsCenter(QDialog):
     def _create_left_nav(self) -> QWidget:
         """Create left navigation panel."""
         nav_widget = QWidget()
-        nav_widget.setFixedWidth(160)
-        nav_widget.setStyleSheet("background-color: #f5f5f5;")
+        nav_widget.setFixedWidth(190)
+        nav_widget.setStyleSheet("""
+            QWidget {
+                background: #17201d;
+                border-right: 1px solid #dfe6e1;
+            }
+        """)
         nav_layout = QVBoxLayout(nav_widget)
-        nav_layout.setContentsMargins(10, 20, 10, 20)
+        nav_layout.setContentsMargins(16, 24, 16, 18)
         nav_layout.setSpacing(8)
 
         # Title
-        title = QLabel("设置中心")
-        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #333;")
+        title = QLabel("桌面宠物")
+        title.setStyleSheet("font-size: 20px; font-weight: 800; color: #ffffff;")
         nav_layout.addWidget(title)
-        nav_layout.addSpacing(30)
+        subtitle = QLabel("设置中心")
+        subtitle.setStyleSheet("font-size: 12px; color: #9fb0aa;")
+        nav_layout.addWidget(subtitle)
+        nav_layout.addSpacing(22)
 
         # Pet nav button
-        self.pet_nav_btn = QPushButton("🐱 桌宠")
+        self.pet_nav_btn = QPushButton("宠物库")
         self.pet_nav_btn.setCheckable(True)
         self.pet_nav_btn.setChecked(True)
-        self.pet_nav_btn.setStyleSheet("""
-            QPushButton {
-                text-align: left;
-                padding: 12px 15px;
-                border: none;
-                background: transparent;
-                font-size: 14px;
-                color: #333;
-                border-radius: 8px;
-            }
-            QPushButton:checked {
-                background: #e3f2fd;
-                border-left: 3px solid #0078d4;
-                font-weight: bold;
-                color: #0078d4;
-            }
-            QPushButton:hover {
-                background: #e8e8e8;
-            }
-        """)
+        self.pet_nav_btn.setStyleSheet(NAV_BUTTON_STYLE)
         nav_layout.addWidget(self.pet_nav_btn)
 
         # Global settings nav button
-        self.global_nav_btn = QPushButton("⚙️ 全局设置")
+        self.global_nav_btn = QPushButton("全局设置")
         self.global_nav_btn.setCheckable(True)
-        self.global_nav_btn.setStyleSheet("""
-            QPushButton {
-                text-align: left;
-                padding: 12px 15px;
-                border: none;
-                background: transparent;
-                font-size: 14px;
-                color: #333;
-                border-radius: 8px;
-            }
-            QPushButton:checked {
-                background: #e3f2fd;
-                border-left: 3px solid #0078d4;
-                font-weight: bold;
-                color: #0078d4;
-            }
-            QPushButton:hover {
-                background: #e8e8e8;
-            }
-        """)
+        self.global_nav_btn.setStyleSheet(NAV_BUTTON_STYLE)
         nav_layout.addWidget(self.global_nav_btn)
 
         # Action control nav button
-        self.action_nav_btn = QPushButton("🎬 动作控制")
+        self.action_nav_btn = QPushButton("动作控制")
         self.action_nav_btn.setCheckable(True)
-        self.action_nav_btn.setStyleSheet("""
-            QPushButton {
-                text-align: left;
-                padding: 12px 15px;
-                border: none;
-                background: transparent;
-                font-size: 14px;
-                color: #333;
-                border-radius: 8px;
-            }
-            QPushButton:checked {
-                background: #e3f2fd;
-                border-left: 3px solid #0078d4;
-                font-weight: bold;
-                color: #0078d4;
-            }
-            QPushButton:hover {
-                background: #e8e8e8;
-            }
-        """)
+        self.action_nav_btn.setStyleSheet(NAV_BUTTON_STYLE)
         self.action_nav_btn.setEnabled(False)  # Disabled until pet is set
         nav_layout.addWidget(self.action_nav_btn)
 

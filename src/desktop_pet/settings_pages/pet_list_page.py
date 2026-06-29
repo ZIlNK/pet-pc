@@ -13,6 +13,20 @@ from PyQt6.QtGui import QPixmap, QMovie
 logger = logging.getLogger(__name__)
 
 
+ANIMATED_PREVIEW_SUFFIXES = {".gif", ".webp", ".apng"}
+
+
+def resolve_pet_preview_path(pet_package) -> Path | None:
+    animations_dir = pet_package.animations_dir
+    for filename in (pet_package.meta.preview, pet_package.meta.regular_image):
+        if not filename:
+            continue
+        preview_path = animations_dir / filename
+        if preview_path.exists():
+            return preview_path
+    return None
+
+
 class PetListPage(QWidget):
     """Page displaying list of available pets as cards."""
 
@@ -27,6 +41,7 @@ class PetListPage(QWidget):
         self.pet_loader = pet_loader
         self.pets = []
         self.pet_cards = []
+        self.preview_movies = []
 
         self.setup_ui()
         self.refresh_pets()
@@ -69,6 +84,9 @@ class PetListPage(QWidget):
             if item.widget():
                 item.widget().deleteLater()
         self.pet_cards.clear()
+        for movie in self.preview_movies:
+            movie.stop()
+        self.preview_movies.clear()
 
         current_pet = self.config_manager.get_current_pet_name()
 
@@ -114,11 +132,20 @@ class PetListPage(QWidget):
         preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         preview.setStyleSheet("background: #f5f5f5; border-radius: 8px;")
 
-        # Try to load preview image
+        # Try to load preview media, falling back to the regular pet image.
         try:
-            animations_dir = pet_package.animations_dir
-            preview_file = animations_dir / pet_package.meta.preview
-            if preview_file.exists():
+            preview_file = resolve_pet_preview_path(pet_package)
+            if preview_file and preview_file.suffix.lower() in ANIMATED_PREVIEW_SUFFIXES:
+                movie = QMovie(str(preview_file))
+                movie.setScaledSize(preview.size())
+                if movie.isValid():
+                    preview.setMovie(movie)
+                    movie.start()
+                    self.preview_movies.append(movie)
+                else:
+                    preview.setText("预览不可用")
+                    preview.setStyleSheet("background: #f5f5f5; border-radius: 8px; color: #888;")
+            elif preview_file:
                 pixmap = QPixmap(str(preview_file))
                 scaled = pixmap.scaled(
                     80, 80,
@@ -127,10 +154,11 @@ class PetListPage(QWidget):
                 )
                 preview.setPixmap(scaled)
             else:
-                preview.setText("预览")
+                preview.setText("预览不可用")
                 preview.setStyleSheet("background: #f5f5f5; border-radius: 8px; color: #888;")
         except Exception as e:
-            preview.setText("预览")
+            logger.warning(f"Failed to load pet preview for {pet_package.name}: {e}")
+            preview.setText("预览不可用")
             preview.setStyleSheet("background: #f5f5f5; border-radius: 8px; color: #888;")
 
         layout.addWidget(preview)
@@ -191,6 +219,9 @@ class PetListPage(QWidget):
             """)
             switch_btn.clicked.connect(lambda: self._switch_to_pet(pet_package))
             layout.addWidget(switch_btn)
+
+        card.mousePressEvent = lambda e: self.pet_selected.emit(pet_package)
+        card.setCursor(Qt.CursorShape.PointingHandCursor)
 
         return card
 

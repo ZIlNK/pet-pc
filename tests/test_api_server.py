@@ -49,6 +49,14 @@ def test_api_server_configure():
     assert server._port == 9000
 
 
+def test_api_server_defaults_to_localhost_only():
+    """API server defaults should be safe for local desktop use."""
+    server = ApiServer(MockPet())
+
+    assert server._host == "127.0.0.1"
+    assert server.get_allowed_ips() == ["127.0.0.1", "::1"]
+
+
 def test_api_server_ip_whitelist():
     """Test IP whitelist management."""
     server = ApiServer(MockPet())
@@ -110,8 +118,21 @@ def test_is_safe_callback_url():
 
 
 def test_get_client_ip_x_forwarded_for():
-    """Test client IP extraction from X-Forwarded-For header."""
+    """Proxy headers are ignored unless explicitly trusted."""
     server = ApiServer(MockPet())
+
+    class MockRequest:
+        headers = {"X-Forwarded-For": "203.0.113.1, 70.41.3.18"}
+        remote = "192.168.1.1"
+
+    ip = server._get_client_ip(MockRequest())
+    assert ip == "192.168.1.1"
+
+
+def test_get_client_ip_x_forwarded_for_when_trusted():
+    """Trusted proxy mode uses X-Forwarded-For for deployments behind a proxy."""
+    server = ApiServer(MockPet())
+    server.set_trust_proxy_headers(True)
 
     class MockRequest:
         headers = {"X-Forwarded-For": "203.0.113.1, 70.41.3.18"}
@@ -122,8 +143,21 @@ def test_get_client_ip_x_forwarded_for():
 
 
 def test_get_client_ip_x_real_ip():
-    """Test client IP extraction from X-Real-IP header."""
+    """X-Real-IP is ignored unless proxy headers are trusted."""
     server = ApiServer(MockPet())
+
+    class MockRequest:
+        headers = {"X-Real-IP": "203.0.113.2"}
+        remote = "192.168.1.1"
+
+    ip = server._get_client_ip(MockRequest())
+    assert ip == "192.168.1.1"
+
+
+def test_get_client_ip_x_real_ip_when_trusted():
+    """Trusted proxy mode can use X-Real-IP."""
+    server = ApiServer(MockPet())
+    server.set_trust_proxy_headers(True)
 
     class MockRequest:
         headers = {"X-Real-IP": "203.0.113.2"}

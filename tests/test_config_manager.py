@@ -21,7 +21,13 @@ def temp_config_dir(tmp_path: Path) -> Path:
         "rest_reminder": {
             "enabled": True,
             "interval_minutes": 55,
-            "countdown_seconds": 300
+            "countdown_seconds": 300,
+            "intensity": "normal"
+        },
+        "behavior": {
+            "quiet_mode_enabled": True,
+            "default_head_action": "head",
+            "default_body_action": "body_tap"
         },
         "movement": {
             "random_interval_min_ms": 3000,
@@ -50,6 +56,9 @@ def test_config_manager_loads_default_config(temp_config_dir: Path):
     assert manager.pet.size == 200
     assert manager.rest_reminder.enabled is True
     assert manager.rest_reminder.interval_minutes == 55
+    assert manager.rest_reminder.intensity == "normal"
+    assert manager.behavior.quiet_mode_enabled is True
+    assert manager.behavior.default_head_action == "head"
     assert manager.movement.random_interval_min_ms == 3000
 
 
@@ -120,3 +129,43 @@ def test_config_manager_get_weighted_random_action(temp_config_dir: Path):
     # action2 has 9x weight, should be selected ~90% of the time
     assert results["action2"] > results["action1"] * 5
     assert results.get("disabled", 0) == 0
+
+
+def test_config_manager_saves_global_settings_without_dropping_existing_sections(temp_config_dir: Path):
+    """Saving global settings should preserve unrelated user config sections."""
+    existing_config = {
+        "app": {"current_pet": "default"},
+        "click_detection": {"enabled": True, "zones": [{"name": "head"}]},
+        "actions": {"sit": {"enabled": False}},
+    }
+    with open(temp_config_dir / "user_config.json", "w", encoding="utf-8") as f:
+        json.dump(existing_config, f)
+
+    manager = ConfigManager(config_dir=temp_config_dir)
+    manager.save_global_settings(
+        {
+            "motion_mode": {"default_mode": "motion", "movement_speed": 6},
+            "movement": {"random_interval_min_ms": 4000, "random_interval_max_ms": 12000},
+            "rest_reminder": {
+                "enabled": False,
+                "interval_minutes": 30,
+                "countdown_seconds": 180,
+                "intensity": "gentle",
+            },
+            "behavior": {"quiet_mode_enabled": False},
+            "startup": {"enabled": True},
+            "tray": {"enabled": True, "minimize_to_tray": False},
+            "api": {"enabled": True, "host": "127.0.0.1", "port": 8080, "allowed_ips": ["127.0.0.1"]},
+        }
+    )
+
+    with open(temp_config_dir / "user_config.json", encoding="utf-8") as f:
+        saved = json.load(f)
+
+    assert saved["app"] == existing_config["app"]
+    assert saved["click_detection"] == existing_config["click_detection"]
+    assert saved["actions"] == existing_config["actions"]
+    assert saved["behavior"]["quiet_mode_enabled"] is False
+    assert saved["rest_reminder"]["intensity"] == "gentle"
+    assert saved["api"]["host"] == "127.0.0.1"
+    assert saved["tray"]["minimize_to_tray"] is False

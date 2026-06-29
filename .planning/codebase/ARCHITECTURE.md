@@ -45,12 +45,21 @@
 - Used by: ApiServer
 
 **API Server Layer:**
-- Purpose: aiohttp-based HTTP server for remote control
+- Purpose: aiohttp-based HTTP server for remote control + AI tool-calling
 - Location: `src/desktop_pet/api_server.py`
-- Contains: `ApiServer` class with async request handlers
-- Endpoints: `/api/status`, `/api/move`, `/api/animation`, etc.
+- Contains: `ApiServer` class with async request handlers, tool definitions (`_build_tools`), tool handlers (`_tool_handlers`)
+- Endpoints: `/api/status`, `/api/move`, `/api/animation`, `/api/tools`, `/api/tools/call`, `/api/chat`, `/api/message`, `/api/messages/pending`, `/api/chat_bubble/show`, `/api/chat_bubble/hide`
 - Depends on: aiohttp, MotionModeController signals
-- Used by: DesktopPet
+- Used by: DesktopPet, MCP Server (via HTTP)
+
+**MCP Server Layer:**
+- Purpose: MCP protocol server for AI agent integration (OpenClaw, Claude Desktop, etc.)
+- Location: `src/desktop_pet/mcp_server.py`
+- Contains: `Server` instance with dynamic tool discovery, resource, and prompt handlers
+- Transport: stdio mode (spawned by AI agent as subprocess)
+- Pattern: Dynamically fetches tool definitions from `/api/tools` (30s cache), forwards all `call_tool` to `/api/tools/call`
+- Depends on: httpx, mcp SDK, running pet API server
+- Used by: External AI agents via MCP protocol
 
 **System Integration Layer:**
 - Purpose: System tray, startup management, setup wizard

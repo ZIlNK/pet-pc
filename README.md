@@ -152,6 +152,10 @@ Desktop Pet 提供完整的 HTTP API，支持远程控制宠物行为。
 | `POST` | `/api/animation` | 播放动画（支持回调） | `{"name": "sit"}` |
 | `POST` | `/api/walk` | 播放行走动画 | `{"direction": "left"}` |
 | `GET` | `/api/animations` | 获取可用动画列表 | - |
+| `GET` | `/api/tools` | 获取 AI 可调用工具列表 | - |
+| `POST` | `/api/tools/call` | 执行 AI 工具调用 | `{"name": "tool_name"}` |
+| `POST` | `/api/message` | 显示气泡消息 | `{"text": "消息"}` |
+| `GET` | `/api/messages/pending` | 获取用户消息队列 | - |
 
 ### 快速示例
 

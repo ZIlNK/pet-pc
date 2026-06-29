@@ -101,11 +101,19 @@
   "app": {
     "current_pet": "default"
   },
+  "behavior": {
+    "quiet_mode_enabled": false,
+    "default_head_action": "head",
+    "default_body_action": "body_tap"
+  },
   "api": {
     "enabled": true,
-    "host": "0.0.0.0",
+    "host": "127.0.0.1",
     "port": 8080,
-    "allowed_ips": []
+    "allowed_ips": [
+      "127.0.0.1",
+      "::1"
+    ]
   },
   "click_detection": {
     "enabled": true,
@@ -119,5 +127,29 @@
         "action": "head"
       }
     ]
+  },
+  "motion_mode": {
+    "default_mode": "random",
+    "movement_speed": 9
+  },
+  "movement": {
+    "random_interval_min_ms": 2996,
+    "random_interval_max_ms": 15000
+  },
+  "rest_reminder": {
+    "enabled": true,
+    "interval_minutes": 55,
+    "countdown_seconds": 300,
+    "intensity": "normal"
+  },
+  "startup": {
+    "enabled": true
+  },
+  "tray": {
+    "enabled": true,
+    "minimize_to_tray": true
+  },
+  "display": {
+    "last_screen_index": 0
   }
 }

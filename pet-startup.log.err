@@ -1,0 +1,46 @@
+2026-06-15 17:55:24 - desktop_pet.pet - INFO - Found 1 pet package(s)
+2026-06-15 17:55:24 - desktop_pet.state_machine - DEBUG - State transition: idle -> idle
+2026-06-15 17:55:24 - desktop_pet.pet - INFO - Loaded pet package: 默认桌宠
+2026-06-15 17:55:24 - desktop_pet.state_machine - DEBUG - State transition: idle -> idle
+2026-06-15 17:55:24 - asyncio - DEBUG - Using proactor: IocpProactor
+2026-06-15 17:55:24 - desktop_pet.system_tray - INFO - System tray icon initialized
+2026-06-15 17:55:24 - desktop_pet.api_server - INFO - API server started: http://127.0.0.1:8080
+2026-06-15 17:55:24 - desktop_pet.api_server - INFO - IP whitelist: ['127.0.0.1', '::1']
+2026-06-15 17:55:32 - desktop_pet.pet - DEBUG - Random action: eat
+2026-06-15 17:55:32 - desktop_pet.pet - INFO - Playing animation: eat
+2026-06-15 17:55:32 - desktop_pet.pet - DEBUG - Showing animation GIF: eat
+2026-06-15 17:56:22 - desktop_pet.pet - DEBUG - Animation finished: eat
+2026-06-15 17:56:22 - desktop_pet.state_machine - DEBUG - State transition: idle -> idle
+2026-06-15 17:56:22 - desktop_pet.api_server - DEBUG - [API] Request from IP: 127.0.0.1, whitelist: ['127.0.0.1', '::1']
+2026-06-15 17:56:22 - desktop_pet.state_machine - DEBUG - State transition: idle -> motion_mode
+2026-06-15 17:56:22 - desktop_pet.pet - DEBUG - Switching to right GIF
+2026-06-15 17:56:22 - desktop_pet.pet - DEBUG - Showing right GIF
+2026-06-15 17:56:22 - desktop_pet.api_server - DEBUG - [API] Request from IP: 127.0.0.1, whitelist: ['127.0.0.1', '::1']
+2026-06-15 17:56:23 - desktop_pet.api_server - DEBUG - [API] Request from IP: 127.0.0.1, whitelist: ['127.0.0.1', '::1']
+2026-06-15 17:56:32 - desktop_pet.state_machine - DEBUG - State transition: motion_mode -> idle
+2026-06-15 17:56:32 - desktop_pet.state_machine - DEBUG - State transition: idle -> idle
+2026-06-15 18:01:53 - desktop_pet.api_server - DEBUG - [API] Request from IP: 127.0.0.1, whitelist: ['127.0.0.1', '::1']
+QWindowsWindow::setGeometry: Unable to set geometry 330x153+735+390 (frame: 330x153+735+390) on QWidgetWindow/"ChatBubbleClassWindow" on "\\.\DISPLAY1". Resulting geometry: 330x177+735+390 (frame: 330x177+735+390) margins: 0, 0, 0, 0 minimum size: 220x102 maximum size: 220x16777215 MINMAXINFO(maxSize=POINT(x=0, y=0), maxpos=POINT(x=0, y=0), maxtrack=POINT(x=330, y=0), mintrack=POINT(x=330, y=153)))
+2026-06-15 18:07:12 - desktop_pet.pet - INFO - [ChatBubble] User sent message: hi你能看到我说的话吗？
+2026-06-15 18:08:41 - desktop_pet.api_server - DEBUG - [API] Request from IP: 127.0.0.1, whitelist: ['127.0.0.1', '::1']
+2026-06-15 18:09:28 - desktop_pet.api_server - DEBUG - [API] Request from IP: 127.0.0.1, whitelist: ['127.0.0.1', '::1']
+2026-06-15 18:11:42 - desktop_pet.pet - INFO - [ChatBubble] User sent message: 你回复的字好多聊天框根本放不下
+2026-06-15 18:12:58 - desktop_pet.api_server - DEBUG - [API] Request from IP: 127.0.0.1, whitelist: ['127.0.0.1', '::1']
+2026-06-15 18:13:40 - desktop_pet.api_server - DEBUG - [API] Request from IP: 127.0.0.1, whitelist: ['127.0.0.1', '::1']
+2026-06-15 18:14:52 - desktop_pet.api_server - DEBUG - [API] Request from IP: 127.0.0.1, whitelist: ['127.0.0.1', '::1']
+2026-06-15 18:15:48 - desktop_pet.api_server - DEBUG - [API] Request from IP: 127.0.0.1, whitelist: ['127.0.0.1', '::1']
+2026-06-15 18:16:41 - desktop_pet.api_server - DEBUG - [API] Request from IP: 127.0.0.1, whitelist: ['127.0.0.1', '::1']
+2026-06-17 09:57:01 - desktop_pet.state_machine - DEBUG - State transition: idle -> rest_reminder
+2026-06-17 10:11:46 - desktop_pet.api_server - DEBUG - [API] Request from IP: 127.0.0.1, whitelist: ['127.0.0.1', '::1']
+2026-06-17 10:29:09 - desktop_pet.api_server - DEBUG - [API] Request from IP: 127.0.0.1, whitelist: ['127.0.0.1', '::1']
+2026-06-17 10:29:56 - desktop_pet.api_server - DEBUG - [API] Request from IP: 127.0.0.1, whitelist: ['127.0.0.1', '::1']
+2026-06-17 10:31:01 - desktop_pet.api_server - DEBUG - [API] Request from IP: 127.0.0.1, whitelist: ['127.0.0.1', '::1']
+2026-06-17 10:51:32 - desktop_pet.state_machine - DEBUG - State transition: rest_reminder -> rest_reminder
+2026-06-17 11:29:57 - desktop_pet.api_server - DEBUG - [API] Request from IP: 127.0.0.1, whitelist: ['127.0.0.1', '::1']
+2026-06-17 11:46:32 - desktop_pet.state_machine - DEBUG - State transition: rest_reminder -> rest_reminder
+2026-06-17 12:06:49 - desktop_pet.api_server - DEBUG - [API] Request from IP: 127.0.0.1, whitelist: ['127.0.0.1', '::1']
+2026-06-17 12:07:32 - desktop_pet.api_server - DEBUG - [API] Request from IP: 127.0.0.1, whitelist: ['127.0.0.1', '::1']
+2026-06-17 12:08:39 - desktop_pet.api_server - DEBUG - [API] Request from IP: 127.0.0.1, whitelist: ['127.0.0.1', '::1']
+2026-06-17 12:41:33 - desktop_pet.state_machine - DEBUG - State transition: rest_reminder -> rest_reminder
+2026-06-17 13:36:33 - desktop_pet.state_machine - DEBUG - State transition: rest_reminder -> rest_reminder
+2026-06-17 14:06:11 - desktop_pet.system_tray - INFO - Exiting application from tray menu

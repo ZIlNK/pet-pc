@@ -1,0 +1,44 @@
+{
+  "id": "pet-bubble",
+  "name": "Desktop Pet Bubble",
+  "description": "Local channel that receives desktop pet chat bubble messages via HTTP webhook",
+  "kind": "channel",
+  "activation": {
+    "onStartup": true
+  },
+  "channels": ["pet-bubble"],
+  "channelEnvVars": {
+    "pet-bubble": []
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  },
+  "channelConfigs": {
+    "pet-bubble": {
+      "schema": {
+        "type": "object",
+        "properties": {
+          "webhookPath": {
+            "type": "string",
+            "default": "/pet-bubble-webhook"
+          },
+          "webhookHost": {
+            "type": "string",
+            "default": "127.0.0.1"
+          },
+          "webhookPort": {
+            "type": "integer",
+            "default": 0
+          },
+          "autoReply": {
+            "type": "boolean",
+            "default": true,
+            "description": "Echo back AI replies to the pet GUI via MCP show_message"
+          }
+        }
+      }
+    }
+  }
+}

@@ -57,11 +57,17 @@
     "enabled": true,
     "interval_minutes": 55,
     "countdown_seconds": 300,
+    "intensity": "normal",
     "animation": {
       "path": "animations/hui/hui_animation.gif",
       "width": 200,
       "height": 159
     }
+  },
+  "behavior": {
+    "quiet_mode_enabled": false,
+    "default_head_action": "head",
+    "default_body_action": "body_tap"
   },
   "movement": {
     "random_interval_min_ms": 3000,
@@ -80,7 +86,7 @@
   },
   "api": {
     "enabled": true,
-    "host": "0.0.0.0",
+    "host": "127.0.0.1",
     "port": 8080,
     "allowed_ips": [
       "127.0.0.1",
@@ -94,5 +100,27 @@
   "tray": {
     "enabled": true,
     "minimize_to_tray": true
+  },
+  "display": {
+    "cross_screen_drag": true,
+    "cross_screen_random_walk": true,
+    "cross_screen_walk_probability": 0.3,
+    "remember_last_screen": true,
+    "default_screen_index": null,
+    "last_screen_index": null
+  },
+  "llm": {
+    "enabled": false,
+    "api_key": "",
+    "base_url": "https://api.openai.com/v1",
+    "model": "gpt-4o-mini",
+    "system_prompt": "你是一个桌面宠物助手。用户会通过自然语言告诉你想让宠物做什么，你需要调用合适的工具来控制宠物。请用中文回复。",
+    "max_history": 20
+  },
+  "mcp": {
+    "enabled": true,
+    "api_base": "http://127.0.0.1:8080/api",
+    "openclaw_webhook_url": "http://127.0.0.1:18789/pet-bubble-webhook",
+    "openclaw_peer": "boss"
   }
 }

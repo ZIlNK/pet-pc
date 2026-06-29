@@ -36,6 +36,7 @@ class RestReminderConfig:
     enabled: bool = True
     interval_minutes: int = 55
     countdown_seconds: int = 300
+    intensity: str = "normal"
     animation: AnimationConfig | None = None
 
 
@@ -82,6 +83,13 @@ class ClickDetectionConfig:
 
 
 @dataclass
+class BehaviorConfig:
+    quiet_mode_enabled: bool = False
+    default_head_action: str = "head"
+    default_body_action: str = "body_tap"
+
+
+@dataclass
 class StartupConfig:
     enabled: bool = False
     start_hidden: bool = False
@@ -91,6 +99,28 @@ class StartupConfig:
 class TrayConfig:
     enabled: bool = True
     minimize_to_tray: bool = True
+
+
+@dataclass
+class DisplayConfig:
+    """多显示器相关配置"""
+    cross_screen_drag: bool = True            # 拖到边缘允许跨屏
+    cross_screen_random_walk: bool = True     # 随机行为允许跨屏
+    cross_screen_walk_probability: float = 0.3  # 走到边缘时跨屏的概率 (0.0~1.0)
+    remember_last_screen: bool = True         # 重启时恢复上次所在屏
+    default_screen_index: int | None = None   # 启动默认屏;None=主屏
+    last_screen_index: int | None = None      # 上次运行时所在屏(运行时记录)
+
+
+@dataclass
+class LLMConfig:
+    """LLM function calling 相关配置"""
+    enabled: bool = False
+    api_key: str = ""
+    base_url: str = "https://api.openai.com/v1"
+    model: str = "gpt-4o-mini"
+    system_prompt: str = "你是一个桌面宠物助手。用户会通过自然语言告诉你想让宠物做什么，你需要调用合适的工具来控制宠物。请用中文回复。"
+    max_history: int = 20
 
 
 class ConfigManager:
@@ -114,8 +144,11 @@ class ConfigManager:
         self._app_config: AppConfig | None = None
         self._motion_mode: MotionModeConfig | None = None
         self._click_detection: ClickDetectionConfig | None = None
+        self._behavior: BehaviorConfig | None = None
         self._startup: StartupConfig | None = None
         self._tray: TrayConfig | None = None
+        self._display: DisplayConfig | None = None
+        self._llm: LLMConfig | None = None
 
         self.load_config()
     
@@ -185,6 +218,7 @@ class ConfigManager:
             enabled=rest_data.get("enabled", True),
             interval_minutes=rest_data.get("interval_minutes", 55),
             countdown_seconds=rest_data.get("countdown_seconds", 300),
+            intensity=rest_data.get("intensity", "normal"),
             animation=rest_animation
         )
         
@@ -230,6 +264,13 @@ class ConfigManager:
             zones=click_zones
         )
 
+        behavior_data = self._raw_config.get("behavior", {})
+        self._behavior = BehaviorConfig(
+            quiet_mode_enabled=behavior_data.get("quiet_mode_enabled", False),
+            default_head_action=behavior_data.get("default_head_action", "head"),
+            default_body_action=behavior_data.get("default_body_action", "body_tap")
+        )
+
         startup_data = self._raw_config.get("startup", {})
         self._startup = StartupConfig(
             enabled=startup_data.get("enabled", False),
@@ -240,6 +281,42 @@ class ConfigManager:
         self._tray = TrayConfig(
             enabled=tray_data.get("enabled", True),
             minimize_to_tray=tray_data.get("minimize_to_tray", True)
+        )
+
+        display_data = self._raw_config.get("display", {})
+        try:
+            prob = float(display_data.get("cross_screen_walk_probability", 0.3))
+        except (TypeError, ValueError):
+            prob = 0.3
+        try:
+            default_idx = display_data.get("default_screen_index")
+            if default_idx is not None:
+                default_idx = int(default_idx)
+        except (TypeError, ValueError):
+            default_idx = None
+        try:
+            last_idx = display_data.get("last_screen_index")
+            if last_idx is not None:
+                last_idx = int(last_idx)
+        except (TypeError, ValueError):
+            last_idx = None
+        self._display = DisplayConfig(
+            cross_screen_drag=display_data.get("cross_screen_drag", True),
+            cross_screen_random_walk=display_data.get("cross_screen_random_walk", True),
+            cross_screen_walk_probability=max(0.0, min(1.0, prob)),
+            remember_last_screen=display_data.get("remember_last_screen", True),
+            default_screen_index=default_idx,
+            last_screen_index=last_idx,
+        )
+
+        llm_data = self._raw_config.get("llm", {})
+        self._llm = LLMConfig(
+            enabled=llm_data.get("enabled", False),
+            api_key=llm_data.get("api_key", ""),
+            base_url=llm_data.get("base_url", "https://api.openai.com/v1"),
+            model=llm_data.get("model", "gpt-4o-mini"),
+            system_prompt=llm_data.get("system_prompt", LLMConfig.system_prompt),
+            max_history=llm_data.get("max_history", 20),
         )
     
     @property
@@ -271,12 +348,24 @@ class ConfigManager:
         return self._click_detection
 
     @property
+    def behavior(self) -> BehaviorConfig:
+        return self._behavior
+
+    @property
     def startup(self) -> StartupConfig:
         return self._startup
 
     @property
     def tray(self) -> TrayConfig:
         return self._tray
+
+    @property
+    def display(self) -> DisplayConfig:
+        return self._display or DisplayConfig()
+
+    @property
+    def llm(self) -> LLMConfig:
+        return self._llm or LLMConfig()
 
     @property
     def config(self) -> dict[str, Any]:
@@ -288,6 +377,30 @@ class ConfigManager:
     def set_current_pet(self, pet_name: str) -> None:
         self._app_config.current_pet = pet_name
         self._save_app_config()
+
+    def set_last_screen_index(self, index: int) -> None:
+        """记录宠物最近一次所在屏幕索引,持久化到 user_config.json"""
+        if self._display is None:
+            self._display = DisplayConfig()
+        if self._display.last_screen_index == index:
+            return
+        self._display.last_screen_index = index
+        # 持久化
+        existing_config = {}
+        if self.user_config_path.exists():
+            try:
+                with open(self.user_config_path, "r", encoding="utf-8") as f:
+                    existing_config = json.load(f)
+            except (json.JSONDecodeError, IOError):
+                pass
+        if "display" not in existing_config or not isinstance(existing_config.get("display"), dict):
+            existing_config["display"] = {}
+        existing_config["display"]["last_screen_index"] = index
+        try:
+            with open(self.user_config_path, "w", encoding="utf-8") as f:
+                json.dump(existing_config, f, ensure_ascii=False, indent=2)
+        except IOError as e:
+            logger.error(f"Failed to persist last_screen_index: {e}")
 
     def _save_app_config(self) -> None:
         user_config_path = self.user_config_path
@@ -328,6 +441,30 @@ class ConfigManager:
         return enabled_actions[-1]
     
     def reload_config(self) -> None:
+        self.load_config()
+
+    def save_global_settings(self, sections: dict[str, Any]) -> None:
+        existing_config = {}
+        if self.user_config_path.exists():
+            try:
+                with open(self.user_config_path, "r", encoding="utf-8") as f:
+                    existing_config = json.load(f)
+            except (json.JSONDecodeError, IOError):
+                pass
+
+        for section, values in sections.items():
+            if isinstance(values, dict):
+                current = existing_config.get(section, {})
+                if not isinstance(current, dict):
+                    current = {}
+                current.update(values)
+                existing_config[section] = current
+            else:
+                existing_config[section] = values
+
+        with open(self.user_config_path, "w", encoding="utf-8") as f:
+            json.dump(existing_config, f, ensure_ascii=False, indent=2)
+
         self.load_config()
 
     def save_user_config(self) -> None:
