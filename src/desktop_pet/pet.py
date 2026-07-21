@@ -1,23 +1,32 @@
 import logging
 import random
-import asyncio
 from pathlib import Path
-from PyQt6.QtWidgets import QApplication, QLabel, QWidget, QMenu, QDialog, QLineEdit, QPushButton, QVBoxLayout
-from PyQt6.QtGui import QPixmap, QMovie, QAction, QCursor
+from typing import TYPE_CHECKING, Any
+from PyQt6.QtWidgets import QLabel, QWidget, QMenu, QLineEdit, QPushButton, QVBoxLayout
+from PyQt6.QtGui import QPixmap, QMovie, QImageReader, QAction, QCursor
 from PyQt6.QtCore import Qt, QPoint, QTimer, QSize, pyqtSignal
 
 from .states import PetState
 from .state_machine import PetStateMachine
-from .utils import get_assets_path, get_pets_path
-from .config_manager import ConfigManager, ActionManager, ActionConfig, ClickZoneConfig
-from .action_manager_gui import ActionManagerGUI
-from .pet_loader import PetLoader, PetPackage
+from .utils import get_assets_path
+from .config_manager import (
+    ActionConfig,
+    ClickZoneConfig,
+    RestReminderConfig,
+    MovementConfig,
+    PetConfig,
+    BehaviorConfig,
+    MotionModeConfig,
+)
+from .pet_loader import PetPackage
+from .pet_instance import PetInstanceConfig, build_effective_actions
 from .motion_controller import MotionModeController
 from .motion_control_panel import MotionControlPanel
-from .api_server import ApiServer
-from .setup_wizard import SetupWizard
 from .behavior_scheduler import BehaviorScheduler
-from .screen_manager import ScreenManager, ScreenInfo
+from .screen_manager import ScreenInfo
+
+if TYPE_CHECKING:
+    from .pet_platform import PetPlatform
 
 logger = logging.getLogger(__name__)
 
@@ -88,30 +97,44 @@ class DesktopPet(QWidget):
     show_chat_bubble_requested = pyqtSignal(str)
     hide_chat_bubble_requested = pyqtSignal()
     show_custom_bubble_requested = pyqtSignal(str, int)
+    hide_custom_bubble_requested = pyqtSignal()
 
-    def __init__(self):
+    def __init__(self, instance_config: PetInstanceConfig,
+                 pet_package: PetPackage,
+                 platform: "PetPlatform"):
+        """Create a platform-owned desktop pet instance."""
+        if instance_config is None or pet_package is None or platform is None:
+            raise TypeError("DesktopPet requires instance_config, pet_package, and platform")
         super().__init__()
+        self._instance_config = instance_config.clone()
+        self._pet_package = pet_package
+        self._platform = platform
+        self._global_config = platform.global_config
+        self._init_platform_mode(self._instance_config, pet_package, platform)
 
-        # Check if pet resources exist before initializing
-        if not self._check_pet_resources():
-            # Show setup wizard if no pets found
-            if not self._show_setup_wizard():
-                # User cancelled setup, exit
-                QApplication.quit()
-                return
+    def _init_platform_mode(
+        self,
+        instance_config: PetInstanceConfig,
+        pet_package: PetPackage,
+        platform: "PetPlatform",
+    ) -> None:
+        # 平台化核心引用
+        self._instance_config = instance_config.clone()
+        self._pet_package = pet_package
+        self._platform = platform
+        self._global_config = platform.global_config
 
-        self._api_loop = None
         self.assets_path = get_assets_path()
-        self.config_manager = ConfigManager()
-        self.action_manager = ActionManager(self.config_manager, self.assets_path)
-        self.pet_loader = PetLoader()
 
-        self.current_pet_package: PetPackage | None = None
-        behavior_config = self.config_manager.behavior
+        # 每个实例使用独立的 effective actions，不修改共享资源包。
+        self.current_pet_package: PetPackage = pet_package
+        self.effective_actions = build_effective_actions(pet_package, self._instance_config.actions)
+
+        behavior_cfg = self.behavior_config
         self.behavior_scheduler = BehaviorScheduler(
-            quiet_mode_enabled=behavior_config.quiet_mode_enabled,
-            default_head_action=behavior_config.default_head_action,
-            default_body_action=behavior_config.default_body_action
+            quiet_mode_enabled=behavior_cfg.quiet_mode_enabled,
+            default_head_action=behavior_cfg.default_head_action,
+            default_body_action=behavior_cfg.default_body_action,
         )
 
         # 状态机管理
@@ -120,7 +143,6 @@ class DesktopPet(QWidget):
 
         self.movement_timer = QTimer()
         self.movement_timer.timeout.connect(self.random_move)
-        self.start_random_movement_timer()
         self.previous_pos = QPoint(0, 0)
         self.current_animation_type: str | None = None
         self.current_action: ActionConfig | None = None
@@ -135,16 +157,16 @@ class DesktopPet(QWidget):
         self.rest_timer_display = QTimer()
         self.rest_timer_display.timeout.connect(self.update_rest_timer_display)
 
-        rest_config = self.config_manager.rest_reminder
+        rest_config = self.rest_reminder_config
         self.rest_timer_seconds = rest_config.interval_minutes * 60
-
         if rest_config.enabled:
             self.rest_timer.start(rest_config.interval_minutes * 60 * 1000)
         self.rest_timer_display.start(1000)
 
+        # 实例级 click_detection
         self._click_detection_enabled = False
         self._click_zones: list[ClickZoneConfig] = []
-        click_detection_config = self.config_manager.config.get("click_detection", {})
+        click_detection_config = self.click_detection_config_dict
         self._click_detection_enabled = click_detection_config.get("enabled", False)
         click_zones_data = click_detection_config.get("zones", [])
         for zone_data in click_zones_data:
@@ -164,6 +186,32 @@ class DesktopPet(QWidget):
         self.idle_gif: QMovie | None = None
 
         self.motion_controller = MotionModeController(self)
+        motion_cfg = self.motion_mode_config
+        self.motion_controller.configure(default_mode=motion_cfg.default_mode, movement_speed=motion_cfg.movement_speed, animation_wait=motion_cfg.animation_wait)
+        self._connect_motion_controller_signals()
+
+        # 所有实例共享平台的多屏幕管理器。
+        if platform.screen_manager is None:
+            raise RuntimeError("PetPlatform screen manager is not initialized")
+        self.screen_manager = platform.screen_manager
+        self.screen_manager.screens_changed.connect(self._on_screens_topology_changed)
+        self.screen_manager.current_screen_changed.connect(self._on_current_screen_changed)
+
+        # 跨线程 chat bubble signal（API 由平台统一管理，但仍需连接回调以备外部 emit）
+        self.show_chat_bubble_requested.connect(self.show_chat_bubble)
+        self.hide_chat_bubble_requested.connect(self.hide_chat_bubble)
+        self.show_custom_bubble_requested.connect(self.show_custom_bubble)
+        self.hide_custom_bubble_requested.connect(self._hide_custom_bubble)
+
+        # 加载宠物包动画 + 点击区域
+        self._load_pet_animations()
+        self.load_click_zones_from_pet()
+
+        self.initUI()
+        self._on_set_mode_requested(motion_cfg.default_mode)
+
+    def _connect_motion_controller_signals(self) -> None:
+        """Connect the platform-owned motion controller to this widget."""
         self.motion_controller.move_to_requested.connect(self._on_move_to_requested)
         self.motion_controller.move_by_requested.connect(self._on_move_by_requested)
         self.motion_controller.move_to_edge_requested.connect(self._on_move_to_edge_requested)
@@ -171,39 +219,154 @@ class DesktopPet(QWidget):
         self.motion_controller.play_walk_requested.connect(self._on_play_walk_requested)
         self.motion_controller.stop_animation_requested.connect(self._on_stop_animation_requested)
         self.motion_controller.set_mode_requested.connect(self._on_set_mode_requested)
+    @property
+    def rest_reminder_config(self) -> RestReminderConfig:
+        """Return this instance's rest-reminder configuration."""
+        data = self._instance_config.rest_reminder or {}
+        return RestReminderConfig(
+            enabled=data.get("enabled", True),
+            interval_minutes=data.get("interval_minutes", 55),
+            countdown_seconds=data.get("countdown_seconds", 300),
+            intensity=data.get("intensity", "normal"),
+            animation=None,
+        )
+    @property
+    def movement_config(self) -> MovementConfig:
+        """Return this instance's random-movement configuration."""
+        data = self._instance_config.movement or {}
+        return MovementConfig(
+            random_interval_min_ms=data.get("random_interval_min_ms", 3000),
+            random_interval_max_ms=data.get("random_interval_max_ms", 15000),
+        )
+    @property
+    def behavior_config(self) -> BehaviorConfig:
+        """Return this instance's behavior configuration."""
+        data = self._instance_config.behavior or {}
+        return BehaviorConfig(
+            quiet_mode_enabled=data.get("quiet_mode_enabled", False),
+            default_head_action=data.get("default_head_action", "head"),
+            default_body_action=data.get("default_body_action", "body_tap"),
+        )
+    @property
+    def pet_config(self) -> PetConfig:
+        """Return this instance's visual-size configuration."""
+        return PetConfig(
+            size=self._instance_config.size or 200,
+            regular_image="images/pet_user_image.png",
+            flying_image="images/pet_flying.png",
+        )
+    @property
+    def motion_mode_config(self) -> MotionModeConfig:
+        """Return this instance's motion-mode configuration."""
+        data = self._instance_config.motion_mode or {}
+        return MotionModeConfig(
+            enabled=data.get("enabled", True),
+            default_mode=data.get("default_mode", "random"),
+            movement_speed=data.get("movement_speed", 5),
+            animation_wait=data.get("animation_wait", True),
+        )
+    @property
+    def click_detection_config_dict(self) -> dict[str, Any]:
+        """Return this instance's click-detection configuration."""
+        return self._instance_config.click_detection or {}
+    @property
+    def display_config(self):
+        """Return the platform-wide display configuration."""
+        return self._global_config.display
+    @property
+    def _global_api_config_dict(self) -> dict[str, Any]:
+        """Return the platform-wide HTTP API configuration."""
+        return self._global_config.api or {}
+    @property
+    def _global_mcp_config_dict(self) -> dict[str, Any]:
+        """Return the platform-wide MCP configuration."""
+        return self._global_config.mcp or {}
+    @property
+    def tray_config(self):
+        """Return the platform-wide tray configuration."""
+        return self._global_config.tray
+    def on_config_updated(self, new_config: PetInstanceConfig) -> None:
+        self._instance_config = new_config.clone()
+        self.effective_actions = build_effective_actions(
+            self.current_pet_package, self._instance_config.actions
+        )
+        self._load_pet_animations()
+        self.load_click_zones_from_pet()
 
-        # 多屏幕管理器(必须在 _load_current_pet / initUI 之前创建)
-        self.screen_manager = ScreenManager(QApplication.instance(), self)
-        self.screen_manager.screens_changed.connect(self._on_screens_topology_changed)
-        self.screen_manager.current_screen_changed.connect(self._on_current_screen_changed)
+        behavior = self.behavior_config
+        self.behavior_scheduler = BehaviorScheduler(
+            quiet_mode_enabled=behavior.quiet_mode_enabled,
+            default_head_action=behavior.default_head_action,
+            default_body_action=behavior.default_body_action,
+        )
+        motion = self.motion_mode_config
+        self.motion_controller.configure(
+            default_mode=motion.default_mode,
+            movement_speed=motion.movement_speed,
+            animation_wait=motion.animation_wait,
+        )
 
-        self.api_server = ApiServer(self)
-        # 把跨线程 signal 连接到主线程的 slot
-        # （API server 在子线程的 asyncio loop 里 emit 这些 signal，
-        # Qt 通过 QueuedConnection 把回调投递到 Qt 主线程的事件循环执行）
-        self.show_chat_bubble_requested.connect(self.show_chat_bubble)
-        self.hide_chat_bubble_requested.connect(self.hide_chat_bubble)
-        self.show_custom_bubble_requested.connect(self.show_custom_bubble)
-        api_config = self.config_manager.config.get("api", {})
-        if api_config.get("enabled", False):
-            host = api_config.get("host", "127.0.0.1")
-            port = api_config.get("port", 8080)
-            allowed_ips = api_config.get("allowed_ips", ["127.0.0.1", "::1"])
-            self.api_server.configure(host, port)
-            self.api_server.set_allowed_ips(allowed_ips)
-            # OpenClaw pet-bubble channel 配置
-            mcp_config = self.config_manager.config.get("mcp", {})
-            self.api_server.set_openclaw_config(
-                mcp_config.get("openclaw_webhook_url", ""),
-                mcp_config.get("openclaw_peer", ""),
+        rest = self.rest_reminder_config
+        self.rest_timer_seconds = rest.interval_minutes * 60
+        self.rest_timer.stop()
+        if rest.enabled:
+            self.rest_timer.start(rest.interval_minutes * 60 * 1000)
+        self._reload_visual_size()
+        self._on_set_mode_requested(motion.default_mode)
+        self.move(self._instance_config.position["x"], self._instance_config.position["y"])
+        if self._instance_config.screen_index is not None:
+            self.screen_manager.notify_pet_screen(
+                self._instance_config.pet_id, self._instance_config.screen_index
             )
 
-        self._load_current_pet()
-        self.initUI()
+    def _reload_visual_size(self) -> None:
+        pet_config = self.pet_config
+        animations_dir = self.current_pet_package.animations_dir
+        default_regular = self.assets_path / pet_config.regular_image
+        default_flying = self.assets_path / pet_config.flying_image
+        self.regular_pixmap = self._load_pixmap(
+            animations_dir / self.current_pet_package.meta.regular_image,
+            default_regular,
+            pet_config.size,
+        )
+        self.flying_pixmap = self._load_pixmap(
+            animations_dir / self.current_pet_package.meta.flying_image,
+            default_flying,
+            pet_config.size,
+        )
+        if self.hui_gif is not None:
+            rest_animation_path = (
+                animations_dir / self.current_pet_package.meta.rest_animation
+            )
+            self.hui_gif.setScaledSize(self._scaled_animation_size(rest_animation_path))
+        if hasattr(self, "label"):
+            self.label.setFixedSize(self.regular_pixmap.size())
+            self.label.setPixmap(self.regular_pixmap)
+        self._natural_pet_size = (self.regular_pixmap.width() + 100, self.regular_pixmap.height())
+        self.setFixedSize(*self._natural_pet_size)
 
-        if api_config.get("enabled", False):
-            self._start_api_server()
-
+    def get_config(self) -> PetInstanceConfig:
+        """Return a snapshot of the current instance configuration."""
+        return self._instance_config.clone()
+    def close_instance(self) -> None:
+        """Explicitly remove this instance from the platform."""
+        try:
+            self._platform.destroy_instance(self._instance_config.pet_id)
+        except Exception as exc:
+            logger.exception("Failed to close pet instance %s", self._instance_config.pet_id)
+            self.show_custom_bubble(f"关闭失败：{exc}", 5000)
+    def _persist_position_if_platform(self) -> None:
+        """Persist the widget's latest position through the owning platform."""
+        try:
+            self._platform.persist_instance_position(
+                self._instance_config.pet_id, self.x(), self.y()
+            )
+            self._instance_config.position = {"x": int(self.x()), "y": int(self.y())}
+        except Exception:
+            logger.exception(
+                "Failed to persist position for pet %s",
+                self._instance_config.pet_id,
+            )
     @property
     def state(self) -> PetState:
         """获取当前状态（兼容属性）"""
@@ -213,28 +376,6 @@ class DesktopPet(QWidget):
     def state(self, value: PetState):
         """设置状态（兼容属性，优先使用状态机方法）"""
         self._state_machine.transition_to(value, force=True)
-
-    def _load_current_pet(self) -> None:
-        pet_name = self.config_manager.get_current_pet_name()
-        pet_package = self.pet_loader.load_pet(pet_name)
-
-        if pet_package:
-            self.current_pet_package = pet_package
-            self.pet_loader.set_current_pet(pet_package)
-            logger.info(f"Loaded pet package: {pet_package.meta.name}")
-            self._load_pet_animations()
-            self.load_click_zones_from_pet()
-        else:
-            logger.warning(f"Failed to load pet package: {pet_name}, trying default package")
-            pet_package = self.pet_loader.load_pet("default")
-            if pet_package:
-                self.current_pet_package = pet_package
-                self.pet_loader.set_current_pet(pet_package)
-                logger.info(f"Loaded default pet package: {pet_package.meta.name}")
-                self._load_pet_animations()
-                self.load_click_zones_from_pet()
-            else:
-                logger.error("Failed to load any pet package")
 
     def _load_pixmap(self, image_path: Path, default_path: Path, size: int) -> QPixmap:
         """加载并缩放图片
@@ -256,19 +397,58 @@ class DesktopPet(QWidget):
             Qt.TransformationMode.SmoothTransformation
         )
 
+    def _animation_canvas_size(self) -> QSize:
+        """Return the regular image size fitted into the configured square bound."""
+        pet_config = self.pet_config
+        regular_path = (
+            self.current_pet_package.animations_dir
+            / self.current_pet_package.meta.regular_image
+        )
+        if not regular_path.exists():
+            regular_path = self.assets_path / pet_config.regular_image
+
+        source_size = QImageReader(str(regular_path)).size()
+        bounds = QSize(pet_config.size, pet_config.size)
+        if not source_size.isValid():
+            return bounds
+        return source_size.scaled(bounds, Qt.AspectRatioMode.KeepAspectRatio)
+
+    def _scaled_animation_size(self, animation_path: Path) -> QSize:
+        """Fit an animation into the regular-image canvas without distortion."""
+        canvas_size = self._animation_canvas_size()
+        source_size = QImageReader(str(animation_path)).size()
+        if not source_size.isValid():
+            return canvas_size
+        scale = min(
+            canvas_size.width() / source_size.width(),
+            canvas_size.height() / source_size.height(),
+        )
+        return QSize(
+            min(canvas_size.width(), round(source_size.width() * scale)),
+            min(canvas_size.height(), round(source_size.height() * scale)),
+        )
+
     def _load_pet_animations(self) -> None:
+        for attr in ("idle_gif", "walk_left_gif", "walk_right_gif"):
+            movie = getattr(self, attr, None)
+            if movie is not None:
+                movie.stop()
+            setattr(self, attr, None)
+
         if not self.current_pet_package:
             return
 
         animations_dir = self.current_pet_package.animations_dir
 
-        for action in self.current_pet_package.actions:
+        for action in self.effective_actions:
+            if not action.enabled:
+                continue
             if action.name == "idle" and action.animation_files:
                 idle_path = animations_dir / action.animation_files[0]
                 if idle_path.exists():
                     try:
                         self.idle_gif = QMovie(str(idle_path))
-                        self.idle_gif.setScaledSize(QSize(200, 159))
+                        self.idle_gif.setScaledSize(self._scaled_animation_size(idle_path))
                     except Exception as e:
                         logger.error(f"Failed to load idle animation: {e}")
 
@@ -278,7 +458,7 @@ class DesktopPet(QWidget):
                     if walk_left_path.exists():
                         try:
                             self.walk_left_gif = QMovie(str(walk_left_path))
-                            self.walk_left_gif.setScaledSize(QSize(200, 159))
+                            self.walk_left_gif.setScaledSize(self._scaled_animation_size(walk_left_path))
                         except Exception as e:
                             logger.error(f"Failed to load walk_left animation: {e}")
                 if len(action.animation_files) >= 2:
@@ -286,7 +466,7 @@ class DesktopPet(QWidget):
                     if walk_right_path.exists():
                         try:
                             self.walk_right_gif = QMovie(str(walk_right_path))
-                            self.walk_right_gif.setScaledSize(QSize(200, 159))
+                            self.walk_right_gif.setScaledSize(self._scaled_animation_size(walk_right_path))
                         except Exception as e:
                             logger.error(f"Failed to load walk_right animation: {e}")
 
@@ -306,12 +486,12 @@ class DesktopPet(QWidget):
     def _available_action_names(self) -> list[str]:
         if not self.current_pet_package:
             return []
-        return [action.name for action in self.current_pet_package.actions if action.enabled]
+        return [action.name for action in self.effective_actions if action.enabled]
 
     def play_animation_action_by_name(self, action_name: str) -> None:
         if not self.current_pet_package:
             return
-        for action in self.current_pet_package.actions:
+        for action in self.effective_actions:
             if action.name == action_name:
                 self.play_animation_action(action)
                 return
@@ -323,48 +503,19 @@ class DesktopPet(QWidget):
         self._click_zones = zones
 
     def load_click_zones_from_pet(self) -> None:
-        """Load click zones from current pet package."""
-        self._click_zones.clear()
-
-        if not self.current_pet_package:
-            return
-
-        import json
-
-        # First try to load from click_zones.json (includes positions)
-        click_zones_path = self.current_pet_package.config_dir / "click_zones.json"
-        if click_zones_path.exists():
-            try:
-                with open(click_zones_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    zones_data = data.get("zones", [])
-                    for zone_data in zones_data:
-                        zone = ClickZoneConfig(
-                            name=zone_data.get("name", ""),
-                            x=zone_data.get("x", 0.0),
-                            y=zone_data.get("y", 0.0),
-                            width=zone_data.get("width", 0.2),
-                            height=zone_data.get("height", 0.2),
-                            action=zone_data.get("action", "")
-                        )
-                        self._click_zones.append(zone)
-                return  # Successfully loaded, no need to fallback
-            except (json.JSONDecodeError, IOError):
-                pass
-
-        # Fallback: load from zone_actions (without positions)
-        for action in self.current_pet_package.actions:
-            if action.zone_actions:
-                for zone_name, action_name in action.zone_actions.items():
-                    zone = ClickZoneConfig(
-                        name=zone_name,
-                        x=0.0,
-                        y=0.0,
-                        width=0.2,
-                        height=0.2,
-                        action=action_name
-                    )
-                    self._click_zones.append(zone)
+        config = self.click_detection_config_dict
+        self._click_detection_enabled = bool(config.get("enabled", False))
+        self._click_zones = [
+            ClickZoneConfig(
+                name=zone.get("name", ""),
+                x=zone.get("x", 0.0),
+                y=zone.get("y", 0.0),
+                width=zone.get("width", 0.0),
+                height=zone.get("height", 0.0),
+                action=zone.get("action", ""),
+            )
+            for zone in config.get("zones", [])
+        ]
 
     def initUI(self):
         self.setWindowFlags(
@@ -376,7 +527,7 @@ class DesktopPet(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
-        pet_config = self.config_manager.pet
+        pet_config = self.pet_config
         default_regular = self.assets_path / pet_config.regular_image
         default_flying = self.assets_path / pet_config.flying_image
 
@@ -401,18 +552,20 @@ class DesktopPet(QWidget):
             if rest_animation_path.exists():
                 try:
                     self.hui_gif = QMovie(str(rest_animation_path))
-                    self.hui_gif.setScaledSize(QSize(200, 159))
+                    self.hui_gif.setScaledSize(self._scaled_animation_size(rest_animation_path))
                 except Exception as e:
                     logger.error(f"Failed to load rest reminder animation: {e}")
                     self.hui_gif = None
             else:
                 # 回退到默认配置
-                self.hui_gif = self.action_manager.load_rest_reminder_movie()
+                self.hui_gif = None
         else:
             # 回退到默认配置
-            self.hui_gif = self.action_manager.load_rest_reminder_movie()
+            self.hui_gif = None
 
         self.label = QLabel(self)
+        self.label.setFixedSize(self.regular_pixmap.size())
+        self.label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom)
         self.label.setPixmap(self.regular_pixmap)
         self.label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
 
@@ -462,9 +615,15 @@ class DesktopPet(QWidget):
         self.bubble_label.move(x_pos, y_pos)
 
         # 选择启动屏幕:remember_last_screen > default_screen_index > 主屏
-        display_cfg = self.config_manager.display
+        display_cfg = self.display_config
         target_screen = None
-        if display_cfg.remember_last_screen and display_cfg.last_screen_index is not None:
+
+        instance_screen_index = self._instance_config.screen_index
+        instance_position = self._instance_config.position
+
+        if instance_screen_index is not None:
+            target_screen = self.screen_manager.screen_by_index(instance_screen_index)
+        if target_screen is None and display_cfg.remember_last_screen and display_cfg.last_screen_index is not None:
             target_screen = self.screen_manager.screen_by_index(display_cfg.last_screen_index)
         if target_screen is None and display_cfg.default_screen_index is not None:
             target_screen = self.screen_manager.screen_by_index(display_cfg.default_screen_index)
@@ -475,7 +634,10 @@ class DesktopPet(QWidget):
             all_s = self.screen_manager.all_screens()
             target_screen = all_s[0] if all_s else None
 
-        if target_screen is not None:
+        if instance_position and isinstance(instance_position, dict):
+            x = int(instance_position.get("x", 100))
+            y = int(instance_position.get("y", 0))
+        elif target_screen is not None:
             g = target_screen.available_geometry
             x = g.x() + 100
             y = g.y() + g.height() - self.height()
@@ -485,15 +647,9 @@ class DesktopPet(QWidget):
         self.move(x, y)
         self.switch_to_static(self.regular_pixmap)
 
-        # 初始化当前屏
-        info = self.screen_manager.screen_for_widget(self)
-        if info is not None:
-            self.screen_manager.notify_pet_screen(info.index)
-
         self.is_dragging = False
         self.drag_position = QPoint()
         self.setMouseTracking(True)
-        self.show()
 
     def resizeEvent(self, event):
         """检测跨屏 DPI 缩放并强制还原到自然尺寸。"""
@@ -510,7 +666,7 @@ class DesktopPet(QWidget):
         return self._natural_pet_size[1]
 
     def start_random_movement_timer(self):
-        movement_config = self.config_manager.movement
+        movement_config = self.movement_config
         random_interval = random.randint(
             movement_config.random_interval_min_ms,
             movement_config.random_interval_max_ms
@@ -518,7 +674,7 @@ class DesktopPet(QWidget):
         self.movement_timer.start(random_interval)
 
     def show_rest_bubble(self):
-        rest_config = self.config_manager.rest_reminder
+        rest_config = self.rest_reminder_config
         if rest_config.intensity == "gentle":
             reminder_text = "休息一下吧\n点击开始倒计时"
         elif rest_config.intensity == "strong":
@@ -558,7 +714,7 @@ class DesktopPet(QWidget):
         self.switch_to_static()
         self.state = PetState.IDLE
 
-        rest_config = self.config_manager.rest_reminder
+        rest_config = self.rest_reminder_config
         self.countdown_seconds = rest_config.countdown_seconds
         self.bubble_label.setText(f"休息倒计时: {self.countdown_seconds}")
         self.countdown_timer.start(1000)
@@ -581,42 +737,21 @@ class DesktopPet(QWidget):
     def restart_rest_timer(self):
         self.bubble_label.hide()
         self.bubble_label.setText("注意休息！\n点击开始倒计时")
-        rest_config = self.config_manager.rest_reminder
+        rest_config = self.rest_reminder_config
         self.rest_timer_seconds = rest_config.interval_minutes * 60
         self.rest_timer.start(rest_config.interval_minutes * 60 * 1000)
 
     def show_custom_bubble(self, text: str, duration_ms: int = 5000):
-        """显示自定义气泡消息（用于 MCP/AI 消息展示）。
+        """显示自定义气泡消息（用于 CLI/MCP/AI 消息展示）。
+
+        视觉样式同休息提醒气泡（灰边框、居中、120px），但保持鼠标穿透
+        以避免点击误触休息倒计时。
 
         Args:
             text: 要显示的消息文本
-            duration_ms: 显示时长（毫秒），默认 5 秒
+            duration_ms: 显示时长（毫秒），0=持续显示，默认 5 秒
         """
         self.bubble_label.setText(text)
-        self.bubble_label.setStyleSheet(
-            """
-            background-color: white;
-            border: 2px solid #4a9eff;
-            border-radius: 10px;
-            padding: 8px;
-            color: #333;
-            font-size: 12px;
-            text-align: left;
-            """
-        )
-        bubble_width = 160
-        x_pos = 10
-        y_pos = 10
-        self.bubble_label.setFixedWidth(bubble_width)
-        self.bubble_label.move(x_pos, y_pos)
-        self.bubble_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.bubble_label.show()
-        QTimer.singleShot(duration_ms, self._hide_custom_bubble)
-
-    def _hide_custom_bubble(self):
-        """隐藏自定义气泡并恢复休息提醒气泡样式"""
-        self.bubble_label.hide()
-        # 恢复休息提醒气泡的原始样式
         self.bubble_label.setStyleSheet(
             """
             background-color: white;
@@ -628,8 +763,20 @@ class DesktopPet(QWidget):
             text-align: center;
             """
         )
-        self.bubble_label.setFixedWidth(120)
-        self.bubble_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        bubble_width = 120
+        x_pos = 10
+        y_pos = 10
+        self.bubble_label.setFixedWidth(bubble_width)
+        self.bubble_label.move(x_pos, y_pos)
+        self.bubble_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.bubble_label.show()
+        if duration_ms > 0:
+            QTimer.singleShot(duration_ms, self._hide_custom_bubble)
+
+    def _hide_custom_bubble(self):
+        """隐藏自定义气泡并恢复休息提醒气泡默认文案"""
+        self.bubble_label.hide()
+        self.bubble_label.setText("注意休息！\n点击开始倒计时")
 
     def show_chat_bubble(self, message: str = ""):
         """显示可交互的聊天气泡。
@@ -648,12 +795,9 @@ class DesktopPet(QWidget):
         self.chat_bubble.hide()
 
     def _on_chat_message_sent(self, text: str):
-        """用户通过聊天气泡发送消息时的回调"""
-        # 将消息传递给 API Server 的消息队列
-        if hasattr(self, 'api_server') and self.api_server:
-            self.api_server.add_user_message(text)
-        logger.info(f"[ChatBubble] User sent message: {text}")
-
+        """Forward a chat-bubble message to the platform API queue."""
+        self._platform.api_server.add_user_message(text)
+        logger.info("[ChatBubble] User sent message: %s", text)
     def _toggle_chat_bubble(self):
         """切换聊天气泡的显示/隐藏"""
         if self.chat_bubble.isVisible():
@@ -737,7 +881,7 @@ class DesktopPet(QWidget):
         animations_dir = self.current_pet_package.animations_dir
 
         pet_action = None
-        for action in self.current_pet_package.actions:
+        for action in self.effective_actions:
             if action.name == action_name:
                 pet_action = action
                 break
@@ -753,7 +897,7 @@ class DesktopPet(QWidget):
 
         try:
             movie = QMovie(str(animation_path))
-            movie.setScaledSize(QSize(200, 159))
+            movie.setScaledSize(self._scaled_animation_size(animation_path))
             return movie
         except Exception as e:
             logger.error(f"Failed to load animation {animation_path}: {e}")
@@ -859,7 +1003,7 @@ class DesktopPet(QWidget):
             new_info = self.screen_manager.screen_for_widget(self)
             cur = self._current_screen_info()
             if new_info is not None and (cur is None or new_info.index != cur.index):
-                self.screen_manager.notify_pet_screen(new_info.index)
+                self.screen_manager.notify_pet_screen(self._instance_config.pet_id, new_info.index)
             event.accept()
 
     def snap_to_edge(self):
@@ -875,7 +1019,7 @@ class DesktopPet(QWidget):
         y_axis = g.y() + g.height() - pet_geometry.height()
 
         # 检查是否需要跨屏
-        display_cfg = self.config_manager.display
+        display_cfg = self.display_config
         if display_cfg.cross_screen_drag:
             # 仅当贴在该侧 5px 内时尝试跨屏
             margin = 5
@@ -948,78 +1092,26 @@ class DesktopPet(QWidget):
     def contextMenuEvent(self, event):
         context_menu = QMenu(self)
 
-        # 与 AI 对话
         chat_action = QAction("与 AI 对话", self)
         chat_action.triggered.connect(self._toggle_chat_bubble)
         context_menu.addAction(chat_action)
 
-        context_menu.addSeparator()
-
-        # Open settings center
         open_settings_action = QAction("打开设置中心", self)
         open_settings_action.triggered.connect(self._open_settings_center)
         context_menu.addAction(open_settings_action)
 
         context_menu.addSeparator()
-
-        # Minimize to tray option (if tray is enabled)
-        if hasattr(self, '_tray_icon') and self._tray_icon and self.config_manager.tray.enabled:
-            minimize_to_tray_action = QAction("最小化到托盘", self)
-            minimize_to_tray_action.triggered.connect(self._minimize_to_tray)
-            context_menu.addAction(minimize_to_tray_action)
-
-        exit_action = QAction("退出", self)
-        exit_action.triggered.connect(self.exit_app)
-        context_menu.addAction(exit_action)
+        close_instance_action = QAction("关闭此桌宠", self)
+        close_instance_action.triggered.connect(self.close_instance)
+        context_menu.addAction(close_instance_action)
 
         context_menu.exec(event.globalPos())
-
     def _open_settings_center(self):
-        """Open the settings center dialog."""
+        """Open the platform settings center."""
         from .settings_center import SettingsCenter
-        settings_center = SettingsCenter(self.config_manager, self.pet_loader, self, self)
+
+        settings_center = SettingsCenter(self._platform, self)
         settings_center.exec()
-
-    def _switch_to_pet(self, pet_package: PetPackage) -> None:
-        self.current_pet_package = pet_package
-        self.pet_loader.set_current_pet(pet_package)
-        self.config_manager.set_current_pet(pet_package.name)
-
-        self._load_pet_animations()
-        self.load_click_zones_from_pet()  # Load click zones for new pet
-
-        # 重新加载静态图片
-        pet_config = self.config_manager.pet
-        animations_dir = self.current_pet_package.animations_dir
-        default_regular = self.assets_path / pet_config.regular_image
-        default_flying = self.assets_path / pet_config.flying_image
-
-        # 使用统一的加载方法
-        self.regular_pixmap = self._load_pixmap(
-            animations_dir / self.current_pet_package.meta.regular_image,
-            default_regular, pet_config.size
-        )
-        self.flying_pixmap = self._load_pixmap(
-            animations_dir / self.current_pet_package.meta.flying_image,
-            default_flying, pet_config.size
-        )
-
-        if self.current_gif and self.current_gif.state() == QMovie.MovieState.Running:
-            self.current_gif.stop()
-
-        if self.idle_gif and self.idle_gif.isValid():
-            self.label.setMovie(self.idle_gif)
-            self.idle_gif.start()
-            self.current_gif = self.idle_gif
-        else:
-            self.switch_to_static(self.regular_pixmap)
-
-        logger.info(f"Switched to pet: {pet_package.meta.name}")
-
-    def open_action_manager(self):
-        dialog = ActionManagerGUI(self.config_manager, self.current_pet_package, self)
-        dialog.exec()
-
     def _switch_to_motion_mode(self):
         self.motion_controller.set_mode("motion")
 
@@ -1110,7 +1202,7 @@ class DesktopPet(QWidget):
         self._on_move_to_requested(x, y, target.index)
 
     def _on_play_animation_requested(self, name: str):
-        action = self.current_pet_package.actions if self.current_pet_package else []
+        action = self.effective_actions if self.current_pet_package else []
         found_action = None
         for a in action:
             if a.name == name:
@@ -1144,7 +1236,7 @@ class DesktopPet(QWidget):
             self.switch_to_gif(direction)
             self.start_smooth_move(self.x(), target_x, self.y())
             # 同时更新当前屏
-            self.screen_manager.notify_pet_screen(target.index)
+            self.screen_manager.notify_pet_screen(self._instance_config.pet_id, target.index)
             return
 
         self.switch_to_gif(direction)
@@ -1159,83 +1251,6 @@ class DesktopPet(QWidget):
     def _open_motion_control_panel(self):
         panel = MotionControlPanel(self, self)
         panel.exec()
-
-    def _start_api_server(self):
-        if not self.api_server.is_running:
-            import threading
-            thread = threading.Thread(target=self._run_api_server_async, daemon=True)
-            thread.start()
-
-    def _run_api_server_async(self):
-        self._api_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._api_loop)
-        self._api_loop.run_until_complete(self.api_server.start())
-        self._api_loop.run_forever()
-
-    def _stop_api_server(self):
-        if self.api_server.is_running:
-            import threading
-            thread = threading.Thread(target=self._run_api_server_stop_async, daemon=True)
-            thread.start()
-
-    def _run_api_server_stop_async(self):
-        if self._api_loop and self._api_loop.is_running():
-            self._api_loop.call_soon_threadsafe(
-                lambda: asyncio.create_task(self.api_server.stop())
-            )
-
-    def exit_app(self):
-        QApplication.quit()
-
-    def _minimize_to_tray(self):
-        """Minimize the pet to the system tray."""
-        if hasattr(self, '_tray_icon') and self._tray_icon:
-            self.hide()
-            self._tray_icon.set_pet_visible(False)
-
-    def set_tray_icon(self, tray_icon):
-        """Set the system tray icon reference.
-
-        Args:
-            tray_icon: The SystemTrayIcon instance.
-        """
-        self._tray_icon = tray_icon
-
-    def _check_pet_resources(self) -> bool:
-        """Check if any valid pet packages exist."""
-        pets_path = get_pets_path()
-        if not pets_path.exists():
-            logger.info(f"Pets directory does not exist: {pets_path}")
-            return False
-
-        # Check if there are any valid pet packages
-        pet_loader = PetLoader(pets_path)
-        pets = pet_loader.scan_pets()
-        if len(pets) > 0:
-            logger.info(f"Found {len(pets)} pet package(s)")
-            return True
-
-        logger.info("No valid pet packages found")
-        return False
-
-    def _show_setup_wizard(self) -> bool:
-        """Show setup wizard when no pet resources found.
-
-        Returns True if setup was successful, False if user cancelled.
-        """
-        pets_path = get_pets_path()
-        wizard = SetupWizard(pets_path)
-
-        result = wizard.exec()
-
-        if result == QDialog.DialogCode.Accepted:
-            logger.info("Setup wizard completed successfully")
-            # Reinitialize pet loader with the new pets path
-            self.pet_loader = PetLoader(pets_path)
-            return True
-        else:
-            logger.info("Setup wizard cancelled")
-            return False
 
     def _current_screen_info(self) -> ScreenInfo | None:
         """返回宠物当前所在屏幕的 ScreenInfo"""
@@ -1259,7 +1274,7 @@ class DesktopPet(QWidget):
     def _do_cross_screen_move(self, x: int, y: int, target: ScreenInfo) -> None:
         """显式跨屏传送:瞬时切屏 + 落位 + 更新当前屏状态"""
         self.move(x, y)
-        self.screen_manager.notify_pet_screen(target.index)
+        self.screen_manager.notify_pet_screen(self._instance_config.pet_id, target.index)
         self.switch_to_static(self.regular_pixmap)
         self.state = PetState.IDLE
         self.start_random_movement_timer()
@@ -1272,7 +1287,7 @@ class DesktopPet(QWidget):
 
         返回: (new_x, new_y, target_screen) 或 None(不跨屏)
         """
-        display_cfg = self.config_manager.display
+        display_cfg = self.display_config
         if not display_cfg.cross_screen_random_walk:
             return None
         if random.random() > display_cfg.cross_screen_walk_probability:
@@ -1312,12 +1327,16 @@ class DesktopPet(QWidget):
         except Exception as e:
             logger.debug(f"restart timer after hot-plug: {e}")
 
-    def _on_current_screen_changed(self, index: int) -> None:
-        """宠物所在屏幕发生变化(跨屏或启动时确定)"""
+    def _on_current_screen_changed(self, pet_id: str, index: int) -> None:
+        if pet_id != self._instance_config.pet_id:
+            return
         try:
-            self.config_manager.set_last_screen_index(int(index))
-        except Exception as e:
-            logger.debug(f"persist last screen index: {e}")
+            idx = int(index)
+            self._platform.persist_instance_screen(pet_id, idx)
+            self._instance_config.screen_index = idx
+            self._instance_config.position = {"x": int(self.x()), "y": int(self.y())}
+        except Exception as exc:
+            logger.debug("persist instance screen failed: %s", exc)
 
     @property
     def api(self):
@@ -1426,6 +1445,7 @@ class DesktopPet(QWidget):
             self.switch_to_static(self.regular_pixmap)
             self.state = PetState.IDLE
             self.start_random_movement_timer()
+            self._persist_position_if_platform()
 
     def apply_inertia(self):
         self.inertia_velocity_x *= 0.92
@@ -1448,7 +1468,7 @@ class DesktopPet(QWidget):
         if new_info is not None:
             cur_info = self._current_screen_info()
             if cur_info is None or new_info.index != cur_info.index:
-                self.screen_manager.notify_pet_screen(new_info.index)
+                self.screen_manager.notify_pet_screen(self._instance_config.pet_id, new_info.index)
 
         post_screen = self._current_screen_info()
         post_g = self._safe_current_screen_info().available_geometry if post_screen is not None else (g if g is not None else None)
@@ -1466,6 +1486,7 @@ class DesktopPet(QWidget):
                 self.state = PetState.IDLE
                 self.switch_to_static(self.regular_pixmap)
                 self.start_random_movement_timer()
+                self._persist_position_if_platform()
                 return
             mid = post_g.y() + post_g.height() / 2
             if self.y() < mid:
@@ -1475,12 +1496,14 @@ class DesktopPet(QWidget):
                 self.switch_to_static(self.regular_pixmap)
                 self.state = PetState.IDLE
                 self.start_random_movement_timer()
+                self._persist_position_if_platform()
         elif post_screen is not None and new_y >= post_g.y() + post_g.height() - pet_height and self.inertia_velocity_y > 0:
             self.inertia_timer.stop()
             self._snap_to_current_bottom()
             self.switch_to_static(self.regular_pixmap)
             self.state = PetState.IDLE
             self.start_random_movement_timer()
+            self._persist_position_if_platform()
 
     def start_gravity_fall(self):
         self.state = PetState.FALLING
@@ -1513,6 +1536,7 @@ class DesktopPet(QWidget):
             self.gravity_timer.stop()
             self.switch_to_static(self.regular_pixmap)
             self.state = PetState.IDLE
+            self._persist_position_if_platform()
         else:
             self.current_fall_speed = min(self.current_fall_speed + 0.5, 10)
             self.move(self.x(), int(new_y))
@@ -1528,7 +1552,7 @@ class DesktopPet(QWidget):
             logger.warning("No pet package loaded")
             return
 
-        action = self.behavior_scheduler.choose_next_action(self.current_pet_package.actions)
+        action = self.behavior_scheduler.choose_next_action(self.effective_actions)
         if not action:
             logger.warning("No available actions")
             return
@@ -1694,7 +1718,7 @@ class DesktopPet(QWidget):
         self.animation_current_y = y
 
         distance = abs(end_x - start_x)
-        pixels_per_step = 1
+        pixels_per_step = self.motion_controller.movement_speed
 
         if distance == 0:
             self.animation_total_steps = 1
@@ -1723,7 +1747,7 @@ class DesktopPet(QWidget):
             new_info = self.screen_manager.screen_for_widget(self)
             cur = self._current_screen_info()
             if new_info is not None and (cur is None or new_info.index != cur.index):
-                self.screen_manager.notify_pet_screen(new_info.index)
+                self.screen_manager.notify_pet_screen(self._instance_config.pet_id, new_info.index)
         else:
             self.animation_timer.stop()
             self.move(self.animation_end_x, self.animation_current_y)
@@ -1733,4 +1757,4 @@ class DesktopPet(QWidget):
             # 最终位置确认当前屏
             final_info = self.screen_manager.screen_for_widget(self)
             if final_info is not None:
-                self.screen_manager.notify_pet_screen(final_info.index)
+                self.screen_manager.notify_pet_screen(self._instance_config.pet_id, final_info.index)

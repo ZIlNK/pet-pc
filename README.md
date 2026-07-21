@@ -2,9 +2,9 @@
 
 # 🐱 Desktop Pet
 
-**一个可爱、可扩展的桌面宠物应用**
+**一个可爱、可扩展的多桌宠平台**
 
-让萌宠陪伴你的每一天，支持自定义动画、休息提醒、HTTP API 远程控制
+让萌宠陪伴你的每一天，支持同时运行多个桌宠实例、自定义动画、休息提醒、HTTP API 远程控制
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![PyQt6](https://img.shields.io/badge/PyQt6-6.0+-green.svg)](https://www.riverbankcomputing.com/software/pyqt/)
@@ -42,6 +42,7 @@
 | 🎬 **丰富动画** | 支持行走、坐姿、阅读、睡觉等多种动画效果 |
 | ⏰ **休息提醒** | 可配置的定时提醒功能，保护你的眼睛和健康 |
 | 🎮 **运动模式** | 通过 GUI 控制面板或 API 精确控制宠物移动 |
+| 🐱‍💻 **多实例平台** | 同时运行多个桌宠，每个实例独立配置（位置、动作、休息提醒等） |
 
 ### 🔧 高级功能
 
@@ -140,11 +141,46 @@ Desktop Pet 提供完整的 HTTP API，支持远程控制宠物行为。
 
 默认端口：`8080`
 
+### 命令行控制（CLI 子命令）
+
+主进程运行后，可通过命令行直接控制：
+
+```bash
+# 新增运行桌宠实例
+uv run desktop-pet add --package default --x 500 --y 300
+
+# 列出当前所有运行中实例
+uv run desktop-pet list
+
+# 关闭并销毁指定桌宠实例（默认需确认，--yes 跳过）
+uv run desktop-pet remove <pet_id>            # 交互式确认
+uv run desktop-pet remove <pet_id> --yes      # 直接销毁，不确认
+
+# 控制指定桌宠（pet_id 通过 list 获取）
+uv run desktop-pet animate <pet_id> --name sit           # 播放动画
+uv run desktop-pet walk <pet_id> --direction left        # 行走动画
+uv run desktop-pet move <pet_id> --xy 500 300            # 移动到绝对坐标
+uv run desktop-pet move <pet_id> --delta 50 0            # 相对移动
+uv run desktop-pet move <pet_id> --edge left             # 移到屏幕边缘
+uv run desktop-pet animations <pet_id>                   # 列出可用动画
+uv run desktop-pet bubble <pet_id> --text "你好"          # 显示文字气泡（持续）
+uv run desktop-pet bubble <pet_id> --text "提示" --duration 3000  # 3秒后自动隐藏
+uv run desktop-pet bubble <pet_id> --hide                # 隐藏文字气泡
+```
+
+> CLI 子命令通过本地 HTTP API 通信，无需重复输入端口。主进程未运行时会提示先启动 `desktop-pet`。
+> `move` 子命令的 `--xy` / `--delta` / `--edge` 三种模式互斥，必选其一。
+
 ### API 端点
+
+> **多宠物路由说明**：
+> - 实例管理端点 `/api/instances...` 用于创建/列举/查询/更新/销毁实例
+> - 按实例寻址 `/api/pets/<pet_id>/...` 作用于指定实例
+> - 原有 `/api/move` 等无 `pet_id` 端点保留，未指定 `pet_id` 时作用于**主实例**（向后兼容）
 
 | 方法 | 端点 | 描述 | 请求体 |
 |------|------|------|--------|
-| `GET` | `/api/status` | 获取宠物状态（位置、模式、动画列表） | - |
+| `GET` | `/api/status` | 获取宠物状态（位置、模式、动画列表，作用于主实例） | - |
 | `POST` | `/api/mode` | 切换模式 | `{"mode": "motion"}` |
 | `POST` | `/api/move` | 移动到指定坐标 | `{"x": 100, "y": 200}` |
 | `POST` | `/api/move_by` | 相对移动 | `{"dx": 50, "dy": 0}` |
@@ -156,6 +192,16 @@ Desktop Pet 提供完整的 HTTP API，支持远程控制宠物行为。
 | `POST` | `/api/tools/call` | 执行 AI 工具调用 | `{"name": "tool_name"}` |
 | `POST` | `/api/message` | 显示气泡消息 | `{"text": "消息"}` |
 | `GET` | `/api/messages/pending` | 获取用户消息队列 | - |
+| `GET` | `/api/instances` | 列出所有运行中实例 | - |
+| `POST` | `/api/instances` | 创建新实例 | `{"package": "default", "position": {"x": 500, "y": 300}}` |
+| `GET` | `/api/instances/<pet_id>` | 获取单个实例状态 | - |
+| `PATCH` | `/api/instances/<pet_id>` | 更新实例配置 | `{"primary": true}` |
+| `DELETE` | `/api/instances/<pet_id>` | 销毁实例 | - |
+| `GET` | `/api/pets/<pet_id>/status` | 获取指定实例状态 | - |
+| `POST` | `/api/pets/<pet_id>/move` | 移动指定实例 | `{"x": 100, "y": 200}` |
+| `POST` | `/api/pets/<pet_id>/animation` | 指定实例播放动画 | `{"name": "sit"}` |
+| `POST` | `/api/pets/<pet_id>/message` | 指定实例显示文字气泡 | `{"text": "你好", "duration": 0}` |
+| `POST` | `/api/pets/<pet_id>/message/hide` | 隐藏指定实例文字气泡 | - |
 
 ### 快速示例
 
@@ -172,6 +218,19 @@ curl -X POST http://localhost:8080/api/move \
 curl -X POST http://localhost:8080/api/animation \
   -H "Content-Type: application/json" \
   -d '{"name": "sit"}'
+
+# 列出所有运行中实例
+curl http://localhost:8080/api/instances
+
+# 创建新实例
+curl -X POST http://localhost:8080/api/instances \
+  -H "Content-Type: application/json" \
+  -d '{"package": "default", "position": {"x": 500, "y": 300}}'
+
+# 按实例寻址移动指定桌宠
+curl -X POST http://localhost:8080/api/pets/<pet_id>/move \
+  -H "Content-Type: application/json" \
+  -d '{"x": 100, "y": 200}'
 ```
 
 ### 公网访问
@@ -304,23 +363,31 @@ uv run python scripts/green_screen_to_gif.py input.mp4 -o output.gif \
 ```
 desktop_pet/
 ├── src/desktop_pet/         # 源代码
-│   ├── pet.py               # 主程序入口
-│   ├── api_server.py        # HTTP API 服务器
+│   ├── pet.py               # DesktopPet 实例 widget（双模式）
+│   ├── pet_platform.py      # 多桌宠平台顶层容器
+│   ├── pet_instance.py      # 实例配置数据模型 PetInstanceConfig
+│   ├── instances_store.py   # 实例配置持久化 InstancesStore
+│   ├── api_server.py        # HTTP API 服务器（多宠物路由）
 │   ├── motion_controller.py # 运动模式控制器
-│   ├── config_manager.py    # 配置管理器
+│   ├── config_manager.py    # GlobalConfigManager + 旧版 ConfigManager
 │   ├── pet_loader.py        # 资源包加载器
+│   ├── system_tray.py       # 系统托盘（多实例菜单）
+│   ├── settings_center.py   # 设置中心
+│   ├── settings_pages/      # 设置页面（实例管理/宠物库/动作控制/全局设置）
 │   └── ...
 ├── config/                  # 配置文件
-│   ├── default_config.json  # 默认配置
-│   └── user_config.json     # 用户配置
+│   ├── default_config.json  # 默认配置（含 instances 占位）
+│   ├── user_config.json     # 用户全局配置覆盖
+│   └── instances.json       # 实例配置（运行时生成，勿手编）
 ├── pets/                    # 宠物资源包
 │   └── default/             # 默认资源包
 │       ├── meta.json        # 资源包元信息
 │       ├── config/          # 资源包配置
 │       └── animations/      # 动画文件
+├── tests/                   # 测试套件（含 test_multi_pet_integration.py 集成测试）
 ├── scripts/                 # 辅助脚本
-│   ├── green_screen_to_gif.py      # CLI 转换工具
-│   └── green_screen_to_gif_gui.py  # GUI 转换工具
+│   ├── green_screen_to_webp_gui.py  # GUI 转换工具
+│   └── green_screen_to_Webp.py      # CLI 转换工具
 └── README.md
 ```
 
@@ -367,7 +434,8 @@ uv run pytest
 - [ ] 支持更多动画格式（Lottie、APNG）
 - [ ] 多显示器支持优化
 - [ ] 国际化支持（i18n）
-- [ ] 系统托盘集成
+- [x] 系统托盘集成（含多实例菜单）
+- [x] 多桌宠平台架构
 - [ ] 自动更新功能
 
 ---

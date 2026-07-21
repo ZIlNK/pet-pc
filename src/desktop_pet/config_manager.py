@@ -1,12 +1,9 @@
 import json
 import logging
-import random
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import QSize
-from PyQt6.QtGui import QMovie
 
 from .utils import get_config_path
 
@@ -123,42 +120,50 @@ class LLMConfig:
     max_history: int = 20
 
 
-class ConfigManager:
+_GLOBAL_SECTIONS: tuple[str, ...] = ("api", "tray", "startup", "display", "mcp", "llm")
+
+
+class GlobalConfigManager:
+    """仅管理全局配置字段的配置管理器。
+
+    平台化拆分后，全局配置（api/tray/startup/display/mcp/llm）由本类管理，
+    实例级配置（actions/rest_reminder/movement/behavior/motion_mode/click_detection/pet）
+    由 ``InstancesStore`` 管理。
+
+    本类复用 ``ConfigManager`` 的 dataclass（``StartupConfig`` / ``TrayConfig`` /
+    ``DisplayConfig`` / ``LLMConfig``）以及 ``_load_json`` / ``_deep_merge`` 加载模式，
+    但仅保留全局字段，不会暴露实例级属性。
+    """
+
     def __init__(self, config_dir: Path | None = None):
-        # Use single config directory for all config files
         if config_dir is None:
             config_dir = get_config_path()
         self.config_dir = Path(config_dir)
-
-        # Ensure config directory exists
         self.config_dir.mkdir(parents=True, exist_ok=True)
 
         self.default_config_path = self.config_dir / "default_config.json"
         self.user_config_path = self.config_dir / "user_config.json"
 
         self._raw_config: dict[str, Any] = {}
-        self._actions: dict[str, ActionConfig] = {}
-        self._rest_reminder: RestReminderConfig | None = None
-        self._movement: MovementConfig | None = None
-        self._pet: PetConfig | None = None
-        self._app_config: AppConfig | None = None
-        self._motion_mode: MotionModeConfig | None = None
-        self._click_detection: ClickDetectionConfig | None = None
-        self._behavior: BehaviorConfig | None = None
         self._startup: StartupConfig | None = None
         self._tray: TrayConfig | None = None
         self._display: DisplayConfig | None = None
         self._llm: LLMConfig | None = None
 
         self.load_config()
-    
+
+    # ------------------------------------------------------------------
+    # 加载与合并（复用 ConfigManager 的逻辑模式）
+    # ------------------------------------------------------------------
     def load_config(self) -> None:
         default_config = self._load_json(self.default_config_path)
         user_config = self._load_json(self.user_config_path)
-        
-        self._raw_config = self._deep_merge(default_config, user_config)
+
+        merged = self._deep_merge(default_config, user_config)
+        # 仅保留全局字段
+        self._raw_config = {k: v for k, v in merged.items() if k in _GLOBAL_SECTIONS}
         self._parse_config()
-    
+
     def _load_json(self, path: Path) -> dict:
         if not path.exists():
             return {}
@@ -173,7 +178,7 @@ class ConfigManager:
         except (json.JSONDecodeError, IOError) as e:
             logger.error(f"Failed to load config file {path}: {e}")
             return {}
-    
+
     def _deep_merge(self, base: dict, override: dict) -> dict:
         result = base.copy()
         for key, value in override.items():
@@ -182,105 +187,18 @@ class ConfigManager:
             else:
                 result[key] = value
         return result
-    
+
     def _parse_config(self) -> None:
-        self._actions = {}
-        actions_data = self._raw_config.get("actions", {})
-        for name, data in actions_data.items():
-            animations = []
-            for anim_data in data.get("animations", []):
-                animations.append(AnimationConfig(
-                    path=anim_data.get("path", ""),
-                    width=anim_data.get("width", 200),
-                    height=anim_data.get("height", 159)
-                ))
-            
-            self._actions[name] = ActionConfig(
-                name=name,
-                enabled=data.get("enabled", True),
-                weight=data.get("weight", 1),
-                action_type=data.get("type", "animation"),
-                description=data.get("description", ""),
-                config=data.get("config", {}),
-                animations=animations
-            )
-        
-        rest_data = self._raw_config.get("rest_reminder", {})
-        anim_data = rest_data.get("animation", {})
-        rest_animation = None
-        if anim_data:
-            rest_animation = AnimationConfig(
-                path=anim_data.get("path", ""),
-                width=anim_data.get("width", 200),
-                height=anim_data.get("height", 159)
-            )
-        self._rest_reminder = RestReminderConfig(
-            enabled=rest_data.get("enabled", True),
-            interval_minutes=rest_data.get("interval_minutes", 55),
-            countdown_seconds=rest_data.get("countdown_seconds", 300),
-            intensity=rest_data.get("intensity", "normal"),
-            animation=rest_animation
-        )
-        
-        movement_data = self._raw_config.get("movement", {})
-        self._movement = MovementConfig(
-            random_interval_min_ms=movement_data.get("random_interval_min_ms", 3000),
-            random_interval_max_ms=movement_data.get("random_interval_max_ms", 15000)
-        )
-        
-        pet_data = self._raw_config.get("pet", {})
-        self._pet = PetConfig(
-            size=pet_data.get("size", 200),
-            regular_image=pet_data.get("regular_image", "images/pet_user_image.png"),
-            flying_image=pet_data.get("flying_image", "images/pet_flying.png")
-        )
-
-        app_data = self._raw_config.get("app", {})
-        self._app_config = AppConfig(
-            current_pet=app_data.get("current_pet", "default")
-        )
-
-        motion_data = self._raw_config.get("motion_mode", {})
-        self._motion_mode = MotionModeConfig(
-            enabled=motion_data.get("enabled", True),
-            default_mode=motion_data.get("default_mode", "random"),
-            movement_speed=motion_data.get("movement_speed", 5),
-            animation_wait=motion_data.get("animation_wait", True)
-        )
-
-        click_data = self._raw_config.get("click_detection", {})
-        click_zones = []
-        for zone_data in click_data.get("zones", []):
-            click_zones.append(ClickZoneConfig(
-                name=zone_data.get("name", ""),
-                x=zone_data.get("x", 0.0),
-                y=zone_data.get("y", 0.0),
-                width=zone_data.get("width", 0.0),
-                height=zone_data.get("height", 0.0),
-                action=zone_data.get("action", "")
-            ))
-        self._click_detection = ClickDetectionConfig(
-            enabled=click_data.get("enabled", False),
-            zones=click_zones
-        )
-
-        behavior_data = self._raw_config.get("behavior", {})
-        self._behavior = BehaviorConfig(
-            quiet_mode_enabled=behavior_data.get("quiet_mode_enabled", False),
-            default_head_action=behavior_data.get("default_head_action", "head"),
-            default_body_action=behavior_data.get("default_body_action", "body_tap")
-        )
-
         startup_data = self._raw_config.get("startup", {})
         self._startup = StartupConfig(
             enabled=startup_data.get("enabled", False),
-            start_hidden=startup_data.get("start_hidden", False)
+            start_hidden=startup_data.get("start_hidden", False),
         )
 
         tray_data = self._raw_config.get("tray", {})
         self._tray = TrayConfig(
             enabled=tray_data.get("enabled", True),
-            minimize_to_tray=tray_data.get("minimize_to_tray", True)
+            minimize_to_tray=tray_data.get("minimize_to_tray", True),
         )
 
         display_data = self._raw_config.get("display", {})
@@ -318,46 +236,27 @@ class ConfigManager:
             system_prompt=llm_data.get("system_prompt", LLMConfig.system_prompt),
             max_history=llm_data.get("max_history", 20),
         )
-    
+
+    # ------------------------------------------------------------------
+    # 属性
+    # ------------------------------------------------------------------
     @property
-    def actions(self) -> dict[str, ActionConfig]:
-        return self._actions
-    
-    @property
-    def rest_reminder(self) -> RestReminderConfig:
-        return self._rest_reminder
-    
-    @property
-    def movement(self) -> MovementConfig:
-        return self._movement
-    
-    @property
-    def pet(self) -> PetConfig:
-        return self._pet
+    def api(self) -> dict[str, Any]:
+        """HTTP API 全局配置（原始 dict，结构参考 default_config.json 的 api 段）。"""
+        return self._raw_config.get("api", {})
 
     @property
-    def app_config(self) -> AppConfig:
-        return self._app_config
-
-    @property
-    def motion_mode(self) -> MotionModeConfig:
-        return self._motion_mode
-
-    @property
-    def click_detection(self) -> ClickDetectionConfig:
-        return self._click_detection
-
-    @property
-    def behavior(self) -> BehaviorConfig:
-        return self._behavior
+    def mcp(self) -> dict[str, Any]:
+        """MCP 全局配置（原始 dict，结构参考 default_config.json 的 mcp 段）。"""
+        return self._raw_config.get("mcp", {})
 
     @property
     def startup(self) -> StartupConfig:
-        return self._startup
+        return self._startup or StartupConfig()
 
     @property
     def tray(self) -> TrayConfig:
-        return self._tray
+        return self._tray or TrayConfig()
 
     @property
     def display(self) -> DisplayConfig:
@@ -369,82 +268,22 @@ class ConfigManager:
 
     @property
     def config(self) -> dict[str, Any]:
+        """原始合并后的 dict（仅含全局字段）。"""
         return self._raw_config
 
-    def get_current_pet_name(self) -> str:
-        return self._app_config.current_pet
-
-    def set_current_pet(self, pet_name: str) -> None:
-        self._app_config.current_pet = pet_name
-        self._save_app_config()
-
-    def set_last_screen_index(self, index: int) -> None:
-        """记录宠物最近一次所在屏幕索引,持久化到 user_config.json"""
-        if self._display is None:
-            self._display = DisplayConfig()
-        if self._display.last_screen_index == index:
-            return
-        self._display.last_screen_index = index
-        # 持久化
-        existing_config = {}
-        if self.user_config_path.exists():
-            try:
-                with open(self.user_config_path, "r", encoding="utf-8") as f:
-                    existing_config = json.load(f)
-            except (json.JSONDecodeError, IOError):
-                pass
-        if "display" not in existing_config or not isinstance(existing_config.get("display"), dict):
-            existing_config["display"] = {}
-        existing_config["display"]["last_screen_index"] = index
-        try:
-            with open(self.user_config_path, "w", encoding="utf-8") as f:
-                json.dump(existing_config, f, ensure_ascii=False, indent=2)
-        except IOError as e:
-            logger.error(f"Failed to persist last_screen_index: {e}")
-
-    def _save_app_config(self) -> None:
-        user_config_path = self.user_config_path
-        existing_config = {}
-        if user_config_path.exists():
-            try:
-                with open(user_config_path, "r", encoding="utf-8") as f:
-                    existing_config = json.load(f)
-            except (json.JSONDecodeError, IOError):
-                pass
-
-        if "app" not in existing_config:
-            existing_config["app"] = {}
-        existing_config["app"]["current_pet"] = self._app_config.current_pet
-
-        with open(user_config_path, "w", encoding="utf-8") as f:
-            json.dump(existing_config, f, ensure_ascii=False, indent=2)
-    
-    def get_enabled_actions(self) -> list[ActionConfig]:
-        return [action for action in self._actions.values() if action.enabled]
-    
-    def get_weighted_random_action(self) -> ActionConfig | None:
-        enabled_actions = self.get_enabled_actions()
-        if not enabled_actions:
-            return None
-        
-        total_weight = sum(action.weight for action in enabled_actions)
-        if total_weight <= 0:
-            return random.choice(enabled_actions)
-        
-        r = random.uniform(0, total_weight)
-        current_weight = 0
-        for action in enabled_actions:
-            current_weight += action.weight
-            if r <= current_weight:
-                return action
-        
-        return enabled_actions[-1]
-    
+    # ------------------------------------------------------------------
+    # 持久化
+    # ------------------------------------------------------------------
     def reload_config(self) -> None:
         self.load_config()
 
     def save_global_settings(self, sections: dict[str, Any]) -> None:
-        existing_config = {}
+        """将指定全局配置段落合并写入 user_config.json 并重新加载。
+
+        与 ``ConfigManager.save_global_settings`` 行为一致：会保留 user_config.json
+        中已有的其他段落（包括实例级字段），仅合并 ``sections`` 中指定的段落。
+        """
+        existing_config: dict[str, Any] = {}
         if self.user_config_path.exists():
             try:
                 with open(self.user_config_path, "r", encoding="utf-8") as f:
@@ -466,129 +305,3 @@ class ConfigManager:
             json.dump(existing_config, f, ensure_ascii=False, indent=2)
 
         self.load_config()
-
-    def save_user_config(self) -> None:
-        """保存用户配置到user_config.json"""
-        actions_data = {}
-        for name, action in self._actions.items():
-            action_dict = {
-                "enabled": action.enabled,
-                "weight": action.weight,
-                "type": action.action_type,
-                "description": action.description,
-            }
-
-            if action.config:
-                action_dict["config"] = action.config
-
-            if action.animations:
-                action_dict["animations"] = [
-                    {
-                        "path": anim.path,
-                        "width": anim.width,
-                        "height": anim.height
-                    }
-                    for anim in action.animations
-                ]
-
-            actions_data[name] = action_dict
-
-        user_config = {
-            "actions": actions_data
-        }
-
-        with open(self.user_config_path, "w", encoding="utf-8") as f:
-            json.dump(user_config, f, ensure_ascii=False, indent=2)
-
-    def get_click_detection_enabled(self) -> bool:
-        if self._click_detection:
-            return self._click_detection.enabled
-        return False
-
-    def set_click_detection_enabled(self, enabled: bool) -> None:
-        if self._click_detection:
-            self._click_detection.enabled = enabled
-        else:
-            self._click_detection = ClickDetectionConfig(enabled=enabled, zones=[])
-
-    def save_config(self) -> None:
-        existing_config = {}
-        if self.user_config_path.exists():
-            try:
-                with open(self.user_config_path, "r", encoding="utf-8") as f:
-                    existing_config = json.load(f)
-            except (json.JSONDecodeError, IOError):
-                pass
-
-        existing_config["click_detection"] = {
-            "enabled": self.get_click_detection_enabled(),
-            "zones": [
-                {
-                    "name": zone.name,
-                    "x": zone.x,
-                    "y": zone.y,
-                    "width": zone.width,
-                    "height": zone.height,
-                    "action": zone.action
-                }
-                for zone in (self._click_detection.zones if self._click_detection else [])
-            ]
-        }
-
-        with open(self.user_config_path, "w", encoding="utf-8") as f:
-            json.dump(existing_config, f, ensure_ascii=False, indent=2)
-
-
-class ActionManager:
-    def __init__(self, config_manager: ConfigManager, assets_path: Path):
-        self.config_manager = config_manager
-        self.assets_path = assets_path
-        self._loaded_movies: dict[str, list[QMovie]] = {}
-    
-    def load_animation_movies(self, action: ActionConfig) -> list[QMovie]:
-        cache_key = action.name
-        if cache_key in self._loaded_movies:
-            return self._loaded_movies[cache_key]
-        
-        movies = []
-        for anim_config in action.animations:
-            full_path = self.assets_path / anim_config.path
-            if full_path.exists():
-                try:
-                    movie = QMovie(str(full_path))
-                    movie.setScaledSize(QSize(anim_config.width, anim_config.height))
-                    movies.append(movie)
-                except Exception as e:
-                    logger.error(f"Failed to load animation {full_path}: {e}")
-        
-        self._loaded_movies[cache_key] = movies
-        return movies
-    
-    def get_random_movie(self, action: ActionConfig) -> QMovie | None:
-        movies = self.load_animation_movies(action)
-        if not movies:
-            return None
-        return random.choice(movies)
-    
-    def load_rest_reminder_movie(self) -> QMovie | None:
-        rest_config = self.config_manager.rest_reminder
-        if not rest_config.animation:
-            return None
-        
-        full_path = self.assets_path / rest_config.animation.path
-        if not full_path.exists():
-            return None
-        
-        try:
-            movie = QMovie(str(full_path))
-            movie.setScaledSize(QSize(
-                rest_config.animation.width,
-                rest_config.animation.height
-            ))
-            return movie
-        except Exception as e:
-            logger.error(f"Failed to load rest reminder animation {full_path}: {e}")
-            return None
-    
-    def clear_cache(self) -> None:
-        self._loaded_movies.clear()

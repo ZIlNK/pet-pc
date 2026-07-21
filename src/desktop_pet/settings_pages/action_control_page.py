@@ -1,371 +1,184 @@
-"""Action control page for Settings Center."""
+"""Per-instance action configuration page."""
+
+import copy
+import logging
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QGroupBox, QFormLayout,
-    QSpinBox, QListWidget, QCheckBox, QMessageBox
+    QAbstractItemView,
+    QGroupBox,
+    QHeaderView,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt6.QtCore import Qt
+
+logger = logging.getLogger(__name__)
+
+PRIMARY_BUTTON_STYLE = """
+    QPushButton {
+        background: #2f7d68;
+        color: white;
+        border: none;
+        padding: 8px 16px;
+        border-radius: 4px;
+        font-weight: 600;
+    }
+    QPushButton:hover { background: #256a58; }
+"""
+
+SECONDARY_BUTTON_STYLE = """
+    QPushButton {
+        background: #ffffff;
+        color: #2f7d68;
+        border: 1px solid #b8c8c1;
+        padding: 6px 12px;
+        border-radius: 4px;
+    }
+    QPushButton:hover {
+        background: #edf5f1;
+        border-color: #2f7d68;
+    }
+"""
 
 
 class ActionControlPage(QWidget):
-    """Page for manually controlling pet actions."""
+    """Edit effective action overrides for one platform instance."""
 
-    def __init__(self, pet, parent=None):
+    def __init__(self, instance_config, platform, parent=None):
+        if instance_config is None or platform is None:
+            raise TypeError("ActionControlPage requires instance_config and platform")
         super().__init__(parent)
-        self.pet = pet
-        self.motion_controller = pet.motion_controller
-        self.setup_ui()
-        self.refresh_animations()
-        self.update_position_display()
-        self.refresh_click_detection_state()
+        self.platform = platform
+        self.instance_config = instance_config
+        self._actions_buffer = copy.deepcopy(instance_config.actions or {})
+        self._setup_ui()
+        self._load_actions_table()
 
-    def setup_ui(self):
+    def set_instance(self, instance_config) -> None:
+        if instance_config is None:
+            raise TypeError("instance_config is required")
+        self.instance_config = instance_config
+        self._actions_buffer = copy.deepcopy(instance_config.actions or {})
+        self._load_actions_table()
+
+    def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(15)
 
-        # Mode control group
-        mode_group = QGroupBox("模式控制")
-        mode_layout = QHBoxLayout(mode_group)
+        title = QLabel("动作配置")
+        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #333;")
+        layout.addWidget(title)
 
-        self.mode_label = QLabel("当前模式: 随机模式")
-        mode_layout.addWidget(self.mode_label)
+        self.actions_group = QGroupBox("实例动作配置")
+        actions_layout = QVBoxLayout(self.actions_group)
 
-        self.random_mode_btn = QPushButton("切换到随机模式")
-        self.random_mode_btn.setStyleSheet("""
-            QPushButton {
-                background: #0078d4;
-                color: white;
-                border: none;
-                padding: 8px 16px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background: #005a9e;
-            }
-        """)
-        self.random_mode_btn.clicked.connect(self.switch_to_random)
-        mode_layout.addWidget(self.random_mode_btn)
+        hint = QLabel("编辑当前实例的动作启用状态和权重；资源包文件不会被修改。")
+        hint.setStyleSheet("color: #66736e; font-size: 12px;")
+        hint.setWordWrap(True)
+        actions_layout.addWidget(hint)
 
-        self.motion_mode_btn = QPushButton("切换到运动模式")
-        self.motion_mode_btn.setStyleSheet("""
-            QPushButton {
-                background: #5cb85c;
-                color: white;
-                border: none;
-                padding: 8px 16px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background: #449d44;
-            }
-        """)
-        self.motion_mode_btn.clicked.connect(self.switch_to_motion)
-        mode_layout.addWidget(self.motion_mode_btn)
+        self.actions_table = QTableWidget()
+        self.actions_table.setColumnCount(4)
+        self.actions_table.setHorizontalHeaderLabels(
+            ["动作名", "启用", "权重", "动画文件数"]
+        )
+        self.actions_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        self.actions_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.actions_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        actions_layout.addWidget(self.actions_table)
 
-        layout.addWidget(mode_group)
+        buttons = QHBoxLayout()
+        toggle_button = QPushButton("切换启用状态")
+        toggle_button.setStyleSheet(SECONDARY_BUTTON_STYLE)
+        toggle_button.clicked.connect(self._toggle_selected_action)
+        buttons.addWidget(toggle_button)
 
-        # Position control group
-        position_group = QGroupBox("位置控制")
-        position_layout = QFormLayout(position_group)
+        increase_button = QPushButton("权重 +1")
+        increase_button.setStyleSheet(SECONDARY_BUTTON_STYLE)
+        increase_button.clicked.connect(lambda: self._adjust_selected_weight(1))
+        buttons.addWidget(increase_button)
 
-        self.pos_label = QLabel("(0, 0)")
-        position_layout.addRow("当前位置:", self.pos_label)
+        decrease_button = QPushButton("权重 -1")
+        decrease_button.setStyleSheet(SECONDARY_BUTTON_STYLE)
+        decrease_button.clicked.connect(lambda: self._adjust_selected_weight(-1))
+        buttons.addWidget(decrease_button)
+        buttons.addStretch()
+        actions_layout.addLayout(buttons)
 
-        coord_layout = QHBoxLayout()
-        self.x_spin = QSpinBox()
-        self.x_spin.setRange(0, 3840)
-        self.y_spin = QSpinBox()
-        self.y_spin.setRange(0, 2160)
-        coord_layout.addWidget(QLabel("X:"))
-        coord_layout.addWidget(self.x_spin)
-        coord_layout.addWidget(QLabel("Y:"))
-        coord_layout.addWidget(self.y_spin)
+        save_button = QPushButton("保存动作配置")
+        save_button.setStyleSheet(PRIMARY_BUTTON_STYLE)
+        save_button.clicked.connect(self._save_instance_actions)
+        actions_layout.addWidget(save_button)
 
-        position_layout.addRow("目标坐标:", coord_layout)
+        layout.addWidget(self.actions_group)
 
-        move_btn_layout = QHBoxLayout()
-        self.move_to_btn = QPushButton("移动到")
-        self.move_to_btn.setStyleSheet("""
-            QPushButton {
-                background: #0078d4;
-                color: white;
-                border: none;
-                padding: 6px 12px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background: #005a9e;
-            }
-        """)
-        self.move_to_btn.clicked.connect(self.on_move_to_clicked)
-        move_btn_layout.addWidget(self.move_to_btn)
+    def _load_actions_table(self) -> None:
+        self.actions_table.setRowCount(0)
+        for name, action_data in self._actions_buffer.items():
+            row = self.actions_table.rowCount()
+            self.actions_table.insertRow(row)
+            self.actions_table.setItem(row, 0, QTableWidgetItem(str(name)))
+            enabled = bool(action_data.get("enabled", True))
+            self.actions_table.setItem(row, 1, QTableWidgetItem("是" if enabled else "否"))
+            self.actions_table.setItem(
+                row, 2, QTableWidgetItem(str(action_data.get("weight", 1)))
+            )
+            animation_files = action_data.get("animation_files", []) or []
+            self.actions_table.setItem(
+                row, 3, QTableWidgetItem(str(len(animation_files)))
+            )
 
-        self.move_to_edge_left_btn = QPushButton("左边缘")
-        self.move_to_edge_left_btn.clicked.connect(lambda: self.on_move_to_edge("left"))
-        move_btn_layout.addWidget(self.move_to_edge_left_btn)
+    def _selected_action(self):
+        row = self.actions_table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "提示", "请先选择一个动作。")
+            return None
+        name_item = self.actions_table.item(row, 0)
+        if name_item is None:
+            return None
+        return self._actions_buffer.get(name_item.text())
 
-        self.move_to_edge_right_btn = QPushButton("右边缘")
-        self.move_to_edge_right_btn.clicked.connect(lambda: self.on_move_to_edge("right"))
-        move_btn_layout.addWidget(self.move_to_edge_right_btn)
-
-        position_layout.addRow("", move_btn_layout)
-
-        layout.addWidget(position_group)
-
-        # Direction move group
-        direction_group = QGroupBox("方向移动")
-        direction_layout = QHBoxLayout(direction_group)
-
-        self.up_btn = QPushButton("↑")
-        self.up_btn.setMaximumWidth(50)
-        self.up_btn.setStyleSheet("""
-            QPushButton {
-                background: #f0f0f0;
-                border: 1px solid #ccc;
-                padding: 8px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background: #e0e0e0;
-            }
-        """)
-        self.up_btn.clicked.connect(lambda: self.on_direction_move(0, -50))
-        direction_layout.addWidget(self.up_btn)
-
-        self.down_btn = QPushButton("↓")
-        self.down_btn.setMaximumWidth(50)
-        self.down_btn.setStyleSheet("""
-            QPushButton {
-                background: #f0f0f0;
-                border: 1px solid #ccc;
-                padding: 8px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background: #e0e0e0;
-            }
-        """)
-        self.down_btn.clicked.connect(lambda: self.on_direction_move(0, 50))
-        direction_layout.addWidget(self.down_btn)
-
-        self.left_btn = QPushButton("←")
-        self.left_btn.setMaximumWidth(50)
-        self.left_btn.setStyleSheet("""
-            QPushButton {
-                background: #f0f0f0;
-                border: 1px solid #ccc;
-                padding: 8px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background: #e0e0e0;
-            }
-        """)
-        self.left_btn.clicked.connect(lambda: self.on_direction_move(-50, 0))
-        direction_layout.addWidget(self.left_btn)
-
-        self.right_btn = QPushButton("→")
-        self.right_btn.setMaximumWidth(50)
-        self.right_btn.setStyleSheet("""
-            QPushButton {
-                background: #f0f0f0;
-                border: 1px solid #ccc;
-                padding: 8px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background: #e0e0e0;
-            }
-        """)
-        self.right_btn.clicked.connect(lambda: self.on_direction_move(50, 0))
-        direction_layout.addWidget(self.right_btn)
-
-        layout.addWidget(direction_group)
-
-        # Animation control group
-        animation_group = QGroupBox("动画控制")
-        animation_layout = QVBoxLayout(animation_group)
-
-        self.animation_list = QListWidget()
-        self.animation_list.setMaximumHeight(120)
-        animation_layout.addWidget(self.animation_list)
-
-        anim_btn_layout = QHBoxLayout()
-        self.play_anim_btn = QPushButton("播放选中动画")
-        self.play_anim_btn.setStyleSheet("""
-            QPushButton {
-                background: #5cb85c;
-                color: white;
-                border: none;
-                padding: 8px 16px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background: #449d44;
-            }
-        """)
-        self.play_anim_btn.clicked.connect(self.on_play_animation)
-        anim_btn_layout.addWidget(self.play_anim_btn)
-
-        self.stop_anim_btn = QPushButton("停止动画")
-        self.stop_anim_btn.setStyleSheet("""
-            QPushButton {
-                background: #d9534f;
-                color: white;
-                border: none;
-                padding: 8px 16px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background: #c9302c;
-            }
-        """)
-        self.stop_anim_btn.clicked.connect(self.on_stop_animation)
-        anim_btn_layout.addWidget(self.stop_anim_btn)
-
-        animation_layout.addLayout(anim_btn_layout)
-
-        layout.addWidget(animation_group)
-
-        # Walk control group
-        walk_group = QGroupBox("行走控制")
-        walk_layout = QHBoxLayout(walk_group)
-
-        self.walk_left_btn = QPushButton("← 向左行走")
-        self.walk_left_btn.setStyleSheet("""
-            QPushButton {
-                background: #f0ad4e;
-                color: white;
-                border: none;
-                padding: 10px 20px;
-                border-radius: 4px;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background: #ec971f;
-            }
-        """)
-        self.walk_left_btn.clicked.connect(lambda: self.on_play_walk("left"))
-        walk_layout.addWidget(self.walk_left_btn)
-
-        self.walk_right_btn = QPushButton("向右行走 →")
-        self.walk_right_btn.setStyleSheet("""
-            QPushButton {
-                background: #f0ad4e;
-                color: white;
-                border: none;
-                padding: 10px 20px;
-                border-radius: 4px;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background: #ec971f;
-            }
-        """)
-        self.walk_right_btn.clicked.connect(lambda: self.on_play_walk("right"))
-        walk_layout.addWidget(self.walk_right_btn)
-
-        layout.addWidget(walk_group)
-
-        # Click detection group
-        click_detection_group = QGroupBox("点击检测")
-        click_detection_layout = QHBoxLayout(click_detection_group)
-
-        self.click_detection_checkbox = QCheckBox("启用点击检测")
-        self.click_detection_checkbox.stateChanged.connect(self.on_click_detection_changed)
-        click_detection_layout.addWidget(self.click_detection_checkbox)
-
-        layout.addWidget(click_detection_group)
-
-        # Refresh button
-        self.refresh_btn = QPushButton("🔄 刷新")
-        self.refresh_btn.setStyleSheet("""
-            QPushButton {
-                background: #0078d4;
-                color: white;
-                border: none;
-                padding: 10px 20px;
-                border-radius: 4px;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background: #005a9e;
-            }
-        """)
-        self.refresh_btn.clicked.connect(self.refresh_all)
-        layout.addWidget(self.refresh_btn)
-
-    def refresh_animations(self):
-        self.animation_list.clear()
-        animations = self.motion_controller.get_available_animations()
-        self.animation_list.addItems(animations)
-
-    def update_position_display(self):
-        pos = self.motion_controller.get_position()
-        self.pos_label.setText(f"({pos['x']}, {pos['y']})")
-        self.x_spin.setValue(pos['x'])
-        self.y_spin.setValue(pos['y'])
-
-    def refresh_all(self):
-        self.update_position_display()
-        self.refresh_animations()
-        mode = self.motion_controller.get_mode()
-        self.mode_label.setText(f"当前模式: {'运动模式' if mode == 'motion' else '随机模式'}")
-
-    def switch_to_random(self):
-        self.motion_controller.set_mode("random")
-        self.mode_label.setText("当前模式: 随机模式")
-
-    def switch_to_motion(self):
-        self.motion_controller.set_mode("motion")
-        self.mode_label.setText("当前模式: 运动模式")
-
-    def on_move_to_clicked(self):
-        if self.motion_controller.get_mode() != "motion":
-            QMessageBox.warning(self, "警告", "请先切换到运动模式")
+    def _toggle_selected_action(self) -> None:
+        action = self._selected_action()
+        if action is None:
             return
-        x = self.x_spin.value()
-        y = self.y_spin.value()
-        self.motion_controller.move_to(x, y)
+        action["enabled"] = not bool(action.get("enabled", True))
+        self._load_actions_table()
 
-    def on_move_to_edge(self, edge):
-        if self.motion_controller.get_mode() != "motion":
-            QMessageBox.warning(self, "警告", "请先切换到运动模式")
+    def _adjust_selected_weight(self, delta: int) -> None:
+        action = self._selected_action()
+        if action is None:
             return
-        self.motion_controller.move_to_edge(edge)
+        try:
+            current = int(action.get("weight", 1))
+        except (TypeError, ValueError):
+            current = 1
+        action["weight"] = max(0, current + delta)
+        self._load_actions_table()
 
-    def on_direction_move(self, dx, dy):
-        if self.motion_controller.get_mode() != "motion":
-            QMessageBox.warning(self, "警告", "请先切换到运动模式")
+    def _save_instance_actions(self) -> None:
+        try:
+            updated = self.platform.update_instance_config(
+                self.instance_config.pet_id,
+                {"actions": copy.deepcopy(self._actions_buffer)},
+            )
+        except Exception as error:
+            logger.exception("Failed to save instance actions")
+            QMessageBox.critical(self, "保存失败", f"保存动作配置时出错：{error}")
             return
-        self.motion_controller.move_by(dx, dy)
-
-    def on_play_animation(self):
-        if self.motion_controller.get_mode() != "motion":
-            QMessageBox.warning(self, "警告", "请先切换到运动模式")
-            return
-        current_item = self.animation_list.currentItem()
-        if current_item:
-            anim_name = current_item.text()
-            self.motion_controller.play_animation(anim_name)
-
-    def on_stop_animation(self):
-        self.motion_controller.stop_animation()
-
-    def on_play_walk(self, direction):
-        if self.motion_controller.get_mode() != "motion":
-            QMessageBox.warning(self, "警告", "请先切换到运动模式")
-            return
-        self.motion_controller.play_walk(direction)
-
-    def on_click_detection_changed(self, state):
-        enabled = state == Qt.CheckState.Checked.value
-        self.pet.set_click_detection_enabled(enabled)
-        self.pet.config_manager.set_click_detection_enabled(enabled)
-        self.pet.config_manager.save_config()
-
-    def refresh_click_detection_state(self):
-        enabled = self.pet.config_manager.get_click_detection_enabled()
-        self.click_detection_checkbox.setChecked(enabled)
+        self.instance_config = updated
+        self._actions_buffer = copy.deepcopy(updated.actions or {})
+        self._load_actions_table()
+        QMessageBox.information(self, "保存成功", "动作配置已保存。")

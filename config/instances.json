@@ -1,0 +1,179 @@
+{
+  "instances": [
+    {
+      "pet_id": "195d2b3e",
+      "package": "default",
+      "primary": true,
+      "position": {
+        "x": 74,
+        "y": 726
+      },
+      "screen_index": 0,
+      "size": 200,
+      "actions": {
+        "idle": {
+          "enabled": true,
+          "weight": 0,
+          "type": "animation",
+          "description": "",
+          "config": {},
+          "animation_files": [
+            "idle.png"
+          ],
+          "zone_actions": {}
+        },
+        "walk": {
+          "enabled": true,
+          "weight": 5,
+          "type": "movement",
+          "description": "",
+          "config": {
+            "min_distance": 30,
+            "max_distance": 100
+          },
+          "animation_files": [
+            "walk_left.webp",
+            "walk_right.webp"
+          ],
+          "zone_actions": {}
+        },
+        "sit": {
+          "enabled": true,
+          "weight": 3,
+          "type": "animation",
+          "description": "",
+          "config": {},
+          "animation_files": [
+            "sit.webp",
+            "sit1.webp"
+          ],
+          "zone_actions": {}
+        },
+        "read": {
+          "enabled": true,
+          "weight": 2,
+          "type": "animation",
+          "description": "",
+          "config": {},
+          "animation_files": [
+            "read.webp"
+          ],
+          "zone_actions": {}
+        },
+        "bored": {
+          "enabled": true,
+          "weight": 2,
+          "type": "animation",
+          "description": "",
+          "config": {},
+          "animation_files": [
+            "bored.webp"
+          ],
+          "zone_actions": {}
+        },
+        "eat": {
+          "enabled": true,
+          "weight": 2,
+          "type": "animation",
+          "description": "",
+          "config": {},
+          "animation_files": [
+            "eat.webp"
+          ],
+          "zone_actions": {}
+        },
+        "sleep": {
+          "enabled": true,
+          "weight": 1,
+          "type": "animation",
+          "description": "",
+          "config": {},
+          "animation_files": [
+            "sleep.webp"
+          ],
+          "zone_actions": {}
+        },
+        "write": {
+          "enabled": true,
+          "weight": 1,
+          "type": "animation",
+          "description": "",
+          "config": {},
+          "animation_files": [
+            "write.webp"
+          ],
+          "zone_actions": {}
+        },
+        "body_tap": {
+          "enabled": true,
+          "weight": 0,
+          "type": "animation",
+          "description": "",
+          "config": {},
+          "animation_files": [
+            "bored.webp"
+          ],
+          "zone_actions": {}
+        },
+        "tail_wag": {
+          "enabled": true,
+          "weight": 0,
+          "type": "animation",
+          "description": "",
+          "config": {},
+          "animation_files": [
+            "write.webp"
+          ],
+          "zone_actions": {}
+        },
+        "head": {
+          "enabled": true,
+          "weight": 1,
+          "type": "animation",
+          "description": "",
+          "config": {},
+          "animation_files": [
+            "head1_aligned.webp"
+          ],
+          "zone_actions": {}
+        },
+        "hui": {
+          "enabled": true,
+          "weight": 1,
+          "type": "animation",
+          "description": "",
+          "config": {},
+          "animation_files": [
+            "hui.webp"
+          ],
+          "zone_actions": {}
+        }
+      },
+      "rest_reminder": {
+        "enabled": true,
+        "interval_minutes": 55,
+        "countdown_seconds": 300,
+        "intensity": "normal"
+      },
+      "movement": {
+        "random_interval_min_ms": 3000,
+        "random_interval_max_ms": 15000
+      },
+      "behavior": {
+        "quiet_mode_enabled": false,
+        "default_head_action": "head",
+        "default_body_action": "body_tap"
+      },
+      "motion_mode": {
+        "enabled": true,
+        "default_mode": "random",
+        "movement_speed": 5,
+        "animation_wait": true
+      },
+      "click_detection": {
+        "enabled": false,
+        "zones": []
+      }
+    }
+  ]
+}

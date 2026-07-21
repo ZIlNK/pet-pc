@@ -1,22 +1,93 @@
-"""Pet configuration page."""
+"""Per-instance configuration page for the multi-pet platform."""
 
-import json
+import copy
 import logging
-from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QScrollArea, QGroupBox, QFormLayout,
-    QLineEdit, QSpinBox, QCheckBox, QTableWidget,
-    QTableWidgetItem, QHeaderView, QFileDialog,
-    QMessageBox, QAbstractItemView, QComboBox, QDialog
+    QLineEdit, QSpinBox, QCheckBox, QComboBox,
+    QMessageBox, QDialog
 )
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import pyqtSignal
 
-from ..pet_loader import PetPackage, PetAction
-from ..action_manager_gui import AnimationSelectDialog, ActionEditDialog
 from ..click_zone_dialog import ClickZoneConfigDialog
+from ..config_manager import ClickZoneConfig
+
+
+logger = logging.getLogger(__name__)
+
+
+SECTION_STYLE = """
+    QGroupBox {
+        background: #ffffff;
+        border: 1px solid #dfe6e1;
+        border-radius: 8px;
+        margin-top: 18px;
+        padding: 18px 18px 16px 18px;
+        font-size: 15px;
+        font-weight: 700;
+        color: #1f2b27;
+    }
+    QGroupBox::title {
+        subcontrol-origin: margin;
+        left: 16px;
+        padding: 0 8px;
+        background: #ffffff;
+    }
+"""
+
+INPUT_STYLE = """
+    QLineEdit, QSpinBox, QComboBox {
+        min-height: 30px;
+        padding: 4px 9px;
+        border: 1px solid #cfd8d3;
+        border-radius: 8px;
+        background: #fbfcfa;
+        color: #1f2b27;
+    }
+    QLineEdit:focus, QSpinBox:focus, QComboBox:focus {
+        border: 1px solid #2f7d68;
+        background: #ffffff;
+    }
+"""
+
+CHECK_STYLE = """
+    QCheckBox, QRadioButton {
+        spacing: 8px;
+        color: #2c3935;
+        font-size: 13px;
+    }
+"""
+
+PRIMARY_BUTTON_STYLE = """
+    QPushButton {
+        background: #2f7d68;
+        color: #ffffff;
+        border: none;
+        padding: 9px 22px;
+        border-radius: 8px;
+        font-weight: 700;
+    }
+    QPushButton:hover {
+        background: #256a58;
+    }
+"""
+
+SECONDARY_BUTTON_STYLE = """
+    QPushButton {
+        background: #ffffff;
+        color: #2f7d68;
+        border: 1px solid #b8c8c1;
+        padding: 7px 14px;
+        border-radius: 8px;
+        font-weight: 600;
+    }
+    QPushButton:hover {
+        background: #edf5f1;
+        border-color: #2f7d68;
+    }
+"""
 
 
 class PetConfigPage(QWidget):
@@ -24,19 +95,26 @@ class PetConfigPage(QWidget):
 
     back_to_list = pyqtSignal()
 
-    def __init__(self, config_manager, pet_loader, pet_package, parent=None):
+    def __init__(self, instance_config, platform, parent=None):
+        if instance_config is None or platform is None:
+            raise TypeError("PetConfigPage requires instance_config and platform")
         super().__init__(parent)
-        self.config_manager = config_manager
-        self.pet_loader = pet_loader
-        self.pet_package = pet_package
+        self.instance_config = instance_config
+        self.platform = platform
+        self.pet_package = platform.pet_packages.get(instance_config.package)
         self._preview_movie = None
-
+        self._click_zones_buffer = copy.deepcopy(
+            (instance_config.click_detection or {}).get("zones", [])
+        )
         self.setup_ui()
         self.load_pet_data()
 
-    def set_pet_package(self, pet_package):
-        """Update the current pet package."""
-        self.pet_package = pet_package
+    def set_instance(self, instance_config):
+        self.instance_config = instance_config
+        self.pet_package = self.platform.pet_packages.get(instance_config.package)
+        self._click_zones_buffer = copy.deepcopy(
+            (instance_config.click_detection or {}).get("zones", [])
+        )
         self.load_pet_data()
 
     def setup_ui(self):
@@ -48,18 +126,7 @@ class PetConfigPage(QWidget):
         # Header with back button
         header = QHBoxLayout()
         self.back_btn = QPushButton("← 返回")
-        self.back_btn.setStyleSheet("""
-            QPushButton {
-                background: white;
-                color: #333;
-                border: 1px solid #ddd;
-                padding: 6px 12px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background: #f5f5f5;
-            }
-        """)
+        self.back_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
         self.back_btn.clicked.connect(self.back_to_list.emit)
         header.addWidget(self.back_btn)
 
@@ -77,503 +144,360 @@ class PetConfigPage(QWidget):
         scroll_layout = QVBoxLayout(scroll_content)
         scroll_layout.setSpacing(20)
 
-        # 1. Basic appearance section
-        appearance_group = QGroupBox("基础形象")
-        appearance_group.setStyleSheet("""
-            QGroupBox {
-                font-weight: bold;
-                font-size: 14px;
-                color: #333;
-                border: 1px solid #e0e0e0;
-                border-radius: 8px;
-                margin-top: 10px;
-                padding-top: 10px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px;
-            }
-        """)
-        appearance_layout = QFormLayout(appearance_group)
+        # 1. 实例级配置组（仅新模式显示）
+        self.instance_group = QGroupBox("实例设置")
+        instance_layout = QFormLayout(self.instance_group)
+        instance_layout.setSpacing(10)
+
+        self.package_combo = QComboBox()
+        for package_name in self.platform.pet_packages:
+            self.package_combo.addItem(package_name, package_name)
+        instance_layout.addRow("资源包", self.package_combo)
+
+        # 位置
+        pos_layout = QHBoxLayout()
+        self.pos_x_spin = QSpinBox()
+        self.pos_x_spin.setRange(-10000, 10000)
+        self.pos_y_spin = QSpinBox()
+        self.pos_y_spin.setRange(-10000, 10000)
+        pos_layout.addWidget(QLabel("X:"))
+        pos_layout.addWidget(self.pos_x_spin)
+        pos_layout.addWidget(QLabel("Y:"))
+        pos_layout.addWidget(self.pos_y_spin)
+        instance_layout.addRow("位置", pos_layout)
+
+        # 尺寸
+        self.size_spin = QSpinBox()
+        self.size_spin.setRange(50, 1000)
+        self.size_spin.setSuffix(" px")
+        instance_layout.addRow("尺寸", self.size_spin)
+
+        scroll_layout.addWidget(self.instance_group)
+
+        # 2. 休息提醒组
+        rest_group = QGroupBox("休息提醒")
+        rest_layout = QFormLayout(rest_group)
+        rest_layout.setSpacing(10)
+
+        self.rest_enabled_cb = QCheckBox("启用休息提醒")
+        rest_layout.addRow("", self.rest_enabled_cb)
+
+        self.rest_interval_spin = QSpinBox()
+        self.rest_interval_spin.setRange(1, 180)
+        self.rest_interval_spin.setSuffix(" 分钟")
+        rest_layout.addRow("提醒间隔", self.rest_interval_spin)
+
+        self.countdown_spin = QSpinBox()
+        self.countdown_spin.setRange(30, 1800)
+        self.countdown_spin.setSuffix(" 秒")
+        rest_layout.addRow("倒计时时长", self.countdown_spin)
+
+        self.rest_intensity_combo = QComboBox()
+        self.rest_intensity_combo.addItem("轻柔", "gentle")
+        self.rest_intensity_combo.addItem("普通", "normal")
+        self.rest_intensity_combo.addItem("强提醒", "strong")
+        rest_layout.addRow("提醒强度", self.rest_intensity_combo)
+
+        scroll_layout.addWidget(rest_group)
+
+        # 3. 移动设置组
+        movement_group = QGroupBox("随机移动")
+        movement_layout = QFormLayout(movement_group)
+        movement_layout.setSpacing(10)
+
+        self.min_interval_spin = QSpinBox()
+        self.min_interval_spin.setRange(1000, 60000)
+        self.min_interval_spin.setSuffix(" 毫秒")
+        movement_layout.addRow("最小间隔", self.min_interval_spin)
+
+        self.max_interval_spin = QSpinBox()
+        self.max_interval_spin.setRange(1000, 60000)
+        self.max_interval_spin.setSuffix(" 毫秒")
+        movement_layout.addRow("最大间隔", self.max_interval_spin)
+
+        scroll_layout.addWidget(movement_group)
+
+        # 4. 运动模式组
+        motion_group = QGroupBox("运动模式")
+        motion_layout = QFormLayout(motion_group)
+        motion_layout.setSpacing(10)
+
+        self.motion_enabled_cb = QCheckBox("启用运动模式")
+        motion_layout.addRow("", self.motion_enabled_cb)
+
+        self.motion_default_mode_combo = QComboBox()
+        self.motion_default_mode_combo.addItem("随机模式", "random")
+        self.motion_default_mode_combo.addItem("运动模式", "motion")
+        motion_layout.addRow("默认模式", self.motion_default_mode_combo)
+
+        self.speed_spin = QSpinBox()
+        self.speed_spin.setRange(1, 20)
+        self.speed_spin.setSuffix(" 像素/帧")
+        motion_layout.addRow("运动速度", self.speed_spin)
+
+        scroll_layout.addWidget(motion_group)
+
+        # 5. 行为组
+        behavior_group = QGroupBox("行为与互动")
+        behavior_layout = QFormLayout(behavior_group)
+        behavior_layout.setSpacing(10)
+
+        self.quiet_mode_cb = QCheckBox("安静模式")
+        behavior_layout.addRow("", self.quiet_mode_cb)
+
+        self.head_action_edit = QLineEdit()
+        behavior_layout.addRow("默认头部动作", self.head_action_edit)
+
+        self.body_action_edit = QLineEdit()
+        behavior_layout.addRow("默认身体动作", self.body_action_edit)
+
+        scroll_layout.addWidget(behavior_group)
+
+        # 6. 基础形象组（旧模式专用，新模式下隐藏）
+        self.appearance_group = QGroupBox("基础形象")
+        appearance_layout = QFormLayout(self.appearance_group)
         appearance_layout.setSpacing(10)
 
-        # Row 1: 待机形象
         self.regular_image_edit = QLineEdit()
         self.regular_image_edit.setReadOnly(True)
-        self.regular_image_edit.setStyleSheet("background: #f5f5f5; padding: 6px; border-radius: 4px;")
         regular_btn = QPushButton("更换")
-        regular_btn.setStyleSheet("""
-            QPushButton {
-                background: white;
-                color: #0078d4;
-                border: 1px solid #0078d4;
-                padding: 6px 12px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background: #e3f2fd;
-            }
-        """)
+        regular_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
         regular_btn.clicked.connect(lambda: self.select_image('regular'))
         appearance_layout.addRow("待机形象", self.regular_image_edit)
         appearance_layout.addRow("", regular_btn)
 
-        # Row 2: 缓降形象
         self.flying_image_edit = QLineEdit()
         self.flying_image_edit.setReadOnly(True)
-        self.flying_image_edit.setStyleSheet("background: #f5f5f5; padding: 6px; border-radius: 4px;")
         flying_btn = QPushButton("更换")
-        flying_btn.setStyleSheet("""
-            QPushButton {
-                background: white;
-                color: #0078d4;
-                border: 1px solid #0078d4;
-                padding: 6px 12px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background: #e3f2fd;
-            }
-        """)
+        flying_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
         flying_btn.clicked.connect(lambda: self.select_image('flying'))
         appearance_layout.addRow("缓降形象", self.flying_image_edit)
         appearance_layout.addRow("", flying_btn)
 
-        # Row 3: 向左行走
         self.walk_left_label = QLabel("未设置")
         self.walk_left_label.setStyleSheet("color: #666;")
         self.walk_left_btn = QPushButton("设置")
-        self.walk_left_btn.setStyleSheet("""
-            QPushButton {
-                background: white;
-                color: #0078d4;
-                border: 1px solid #0078d4;
-                padding: 6px 12px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background: #e3f2fd;
-            }
-        """)
+        self.walk_left_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
         self.walk_left_btn.clicked.connect(lambda: self.select_walk_animation('left'))
         appearance_layout.addRow("向左行走", self.walk_left_label)
         appearance_layout.addRow("", self.walk_left_btn)
 
-        # Row 4: 向右行走
         self.walk_right_label = QLabel("未设置")
         self.walk_right_label.setStyleSheet("color: #666;")
         self.walk_right_btn = QPushButton("设置")
-        self.walk_right_btn.setStyleSheet("""
-            QPushButton {
-                background: white;
-                color: #0078d4;
-                border: 1px solid #0078d4;
-                padding: 6px 12px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background: #e3f2fd;
-            }
-        """)
+        self.walk_right_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
         self.walk_right_btn.clicked.connect(lambda: self.select_walk_animation('right'))
         appearance_layout.addRow("向右行走", self.walk_right_label)
         appearance_layout.addRow("", self.walk_right_btn)
 
-        # Row 5: 休息动画
         self.rest_animation_edit = QLineEdit()
         self.rest_animation_edit.setReadOnly(True)
-        self.rest_animation_edit.setStyleSheet("background: #f5f5f5; padding: 6px; border-radius: 4px;")
         rest_btn = QPushButton("更换")
-        rest_btn.setStyleSheet("""
-            QPushButton {
-                background: white;
-                color: #0078d4;
-                border: 1px solid #0078d4;
-                padding: 6px 12px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background: #e3f2fd;
-            }
-        """)
+        rest_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
         rest_btn.clicked.connect(lambda: self.select_image('rest'))
         appearance_layout.addRow("休息动画", self.rest_animation_edit)
         appearance_layout.addRow("", rest_btn)
 
-        scroll_layout.addWidget(appearance_group)
+        scroll_layout.addWidget(self.appearance_group)
 
-        # 2. Actions section
-        actions_group = QGroupBox("动作列表")
-        actions_group.setStyleSheet("""
-            QGroupBox {
-                font-weight: bold;
-                font-size: 14px;
-                color: #333;
-                border: 1px solid #e0e0e0;
-                border-radius: 8px;
-                margin-top: 10px;
-                padding-top: 10px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px;
-            }
-        """)
-        actions_layout = QVBoxLayout(actions_group)
+        # 7. 点击检测配置组（旧模式专用）
+        self.click_detection_group = QGroupBox("点击检测配置")
+        click_detection_layout = QVBoxLayout(self.click_detection_group)
 
-        self.actions_table = QTableWidget()
-        self.actions_table.setColumnCount(6)
-        self.actions_table.setHorizontalHeaderLabels(["名称", "类型", "动画文件", "权重", "启用", "操作"])
-        self.actions_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.actions_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.actions_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.actions_table.setStyleSheet("""
-            QTableWidget {
-                border: 1px solid #e0e0e0;
-                border-radius: 4px;
-            }
-            QTableWidget::item {
-                padding: 5px;
-            }
-        """)
-        actions_layout.addWidget(self.actions_table)
-
-        add_action_btn = QPushButton("添加动作")
-        add_action_btn.setStyleSheet("""
-            QPushButton {
-                background: white;
-                color: #0078d4;
-                border: 1px solid #0078d4;
-                padding: 6px 12px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background: #e3f2fd;
-            }
-        """)
-        add_action_btn.clicked.connect(self.add_action)
-        actions_layout.addWidget(add_action_btn)
-
-        scroll_layout.addWidget(actions_group)
-
-        # Click detection configuration group
-        click_detection_group = QGroupBox("点击检测配置")
-        click_detection_group.setStyleSheet("""
-            QGroupBox {
-                font-weight: bold;
-                font-size: 14px;
-                margin-top: 10px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px;
-            }
-        """)
-        click_detection_layout = QVBoxLayout(click_detection_group)
-
+        self.click_enabled_cb = QCheckBox("启用点击区域检测")
+        click_detection_layout.addWidget(self.click_enabled_cb)
         self.click_zone_count_label = QLabel("当前配置: 0 个点击区域")
         click_detection_layout.addWidget(self.click_zone_count_label)
 
         click_zone_btn = QPushButton("配置点击区域")
-        click_zone_btn.setStyleSheet("""
-            QPushButton {
-                background: #0078d4;
-                color: white;
-                border: none;
-                padding: 8px 16px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background: #005a9e;
-            }
-        """)
+        click_zone_btn.setStyleSheet(PRIMARY_BUTTON_STYLE)
         click_zone_btn.clicked.connect(self.configure_click_zones)
         click_detection_layout.addWidget(click_zone_btn)
 
-        scroll_layout.addWidget(click_detection_group)
+        scroll_layout.addWidget(self.click_detection_group)
 
         scroll.setWidget(scroll_content)
         layout.addWidget(scroll)
+
+        # 应用统一样式
+        for grp in (
+            self.instance_group, rest_group, movement_group,
+            motion_group, behavior_group,
+            self.appearance_group, self.click_detection_group,
+        ):
+            grp.setStyleSheet(SECTION_STYLE)
+
+        for field in (
+            self.package_combo, self.pos_x_spin, self.pos_y_spin, self.size_spin,
+            self.rest_interval_spin, self.countdown_spin, self.rest_intensity_combo,
+            self.min_interval_spin, self.max_interval_spin,
+            self.speed_spin, self.motion_default_mode_combo,
+            self.head_action_edit, self.body_action_edit,
+            self.regular_image_edit, self.flying_image_edit, self.rest_animation_edit,
+        ):
+            field.setStyleSheet(INPUT_STYLE)
+
+        for toggle in (
+            self.rest_enabled_cb, self.motion_enabled_cb, self.quiet_mode_cb,
+            self.click_enabled_cb,
+        ):
+            toggle.setStyleSheet(CHECK_STYLE)
 
         # Bottom buttons
         bottom_layout = QHBoxLayout()
         bottom_layout.addStretch()
 
         save_btn = QPushButton("保存配置")
-        save_btn.setStyleSheet("""
-            QPushButton {
-                background: #0078d4;
-                color: white;
-                border: none;
-                padding: 8px 24px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background: #106ebe;
-            }
-        """)
+        save_btn.setStyleSheet(PRIMARY_BUTTON_STYLE)
         save_btn.clicked.connect(self.save_config)
         bottom_layout.addWidget(save_btn)
 
         cancel_btn = QPushButton("取消")
-        cancel_btn.setStyleSheet("""
-            QPushButton {
-                background: white;
-                color: #666;
-                border: 1px solid #ddd;
-                padding: 8px 24px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background: #f5f5f5;
-            }
-        """)
+        cancel_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
         cancel_btn.clicked.connect(self.back_to_list.emit)
         bottom_layout.addWidget(cancel_btn)
 
         layout.addLayout(bottom_layout)
 
+    # ------------------------------------------------------------------
+    # 数据加载
+    # ------------------------------------------------------------------
     def load_pet_data(self):
-        """Load pet configuration data."""
-        if not self.pet_package:
-            return
+        """Load the selected instance configuration."""
+        self._load_instance_data()
+        self.instance_group.setVisible(True)
+        self.appearance_group.setVisible(False)
+        self.click_detection_group.setVisible(True)
 
-        self.title_label.setText(f"配置: {self.pet_package.meta.name}")
+    def _load_instance_data(self):
+        """从 PetInstanceConfig 加载实例级配置。"""
+        cfg = self.instance_config
+        title = f"实例配置: {cfg.package} ({cfg.pet_id})"
+        self.title_label.setText(title)
 
-        # Load meta.json
-        self.regular_image_edit.setText(self.pet_package.meta.regular_image)
-        self.flying_image_edit.setText(self.pet_package.meta.flying_image)
-        self.rest_animation_edit.setText(self.pet_package.meta.rest_animation)
+        package_index = self.package_combo.findData(cfg.package)
+        if package_index < 0:
+            self.package_combo.addItem(f"{cfg.package} (???)", cfg.package)
+            package_index = self.package_combo.count() - 1
+        self.package_combo.setCurrentIndex(package_index)
 
-        # Load walk animations from actions.json
-        walk_action = None
-        for action in self.pet_package.actions:
-            if action.name == "walk":
-                walk_action = action
-                break
+        # 位置
+        pos = cfg.position or {"x": 0, "y": 0}
+        self.pos_x_spin.setValue(int(pos.get("x", 0)))
+        self.pos_y_spin.setValue(int(pos.get("y", 0)))
 
-        if walk_action and len(walk_action.animation_files) >= 1:
-            self.walk_left_label.setText(walk_action.animation_files[0])
-        if walk_action and len(walk_action.animation_files) >= 2:
-            self.walk_right_label.setText(walk_action.animation_files[1])
+        # 尺寸
+        self.size_spin.setValue(int(getattr(cfg, "size", 200) or 200))
 
-        # Load actions table
-        self.actions_table.setRowCount(0)
-        for action in self.pet_package.actions:
-            row = self.actions_table.rowCount()
-            self.actions_table.insertRow(row)
+        # 休息提醒
+        rest = cfg.rest_reminder or {}
+        self.rest_enabled_cb.setChecked(bool(rest.get("enabled", True)))
+        self.rest_interval_spin.setValue(int(rest.get("interval_minutes", 55)))
+        self.countdown_spin.setValue(int(rest.get("countdown_seconds", 300)))
+        idx = self.rest_intensity_combo.findData(rest.get("intensity", "normal"))
+        self.rest_intensity_combo.setCurrentIndex(max(0, idx))
 
-            self.actions_table.setItem(row, 0, QTableWidgetItem(action.name))
-            self.actions_table.setItem(row, 1, QTableWidgetItem(action.type))
-            self.actions_table.setItem(row, 2, QTableWidgetItem(str(len(action.animation_files))))
-            self.actions_table.setItem(row, 3, QTableWidgetItem(str(action.weight)))
-            self.actions_table.setItem(row, 4, QTableWidgetItem("是" if action.enabled else "否"))
+        # 移动
+        movement = cfg.movement or {}
+        self.min_interval_spin.setValue(int(movement.get("random_interval_min_ms", 3000)))
+        self.max_interval_spin.setValue(int(movement.get("random_interval_max_ms", 15000)))
 
-            # Add edit and delete buttons in 操作 column
-            edit_btn = QPushButton("编辑")
-            edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            edit_btn.setStyleSheet("""
-                QPushButton {
-                    background: #0078d4;
-                    color: white;
-                    border: none;
-                    padding: 4px 8px;
-                    border-radius: 3px;
-                }
-                QPushButton:hover {
-                    background: #005a9e;
-                }
-            """)
-            edit_btn.clicked.connect(lambda checked, a=action: self.edit_action(a))
+        # 运动模式
+        motion = cfg.motion_mode or {}
+        self.motion_enabled_cb.setChecked(bool(motion.get("enabled", True)))
+        idx = self.motion_default_mode_combo.findData(motion.get("default_mode", "random"))
+        self.motion_default_mode_combo.setCurrentIndex(max(0, idx))
+        self.speed_spin.setValue(int(motion.get("movement_speed", 5)))
 
-            delete_btn = QPushButton("删除")
-            delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            delete_btn.setStyleSheet("""
-                QPushButton {
-                    background: #d9534f;
-                    color: white;
-                    border: none;
-                    padding: 4px 8px;
-                    border-radius: 3px;
-                }
-                QPushButton:hover {
-                    background: #c9302c;
-                }
-            """)
-            delete_btn.clicked.connect(lambda checked, a=action: self.delete_action(a))
+        # 行为
+        behavior = cfg.behavior or {}
+        self.quiet_mode_cb.setChecked(bool(behavior.get("quiet_mode_enabled", False)))
+        self.head_action_edit.setText(str(behavior.get("default_head_action", "head")))
+        self.body_action_edit.setText(str(behavior.get("default_body_action", "body_tap")))
 
-            btn_widget = QWidget()
-            btn_layout = QHBoxLayout(btn_widget)
-            btn_layout.addWidget(edit_btn)
-            btn_layout.addWidget(delete_btn)
-            btn_layout.setContentsMargins(2, 0, 2, 0)
-            btn_layout.setSpacing(4)
-            self.actions_table.setCellWidget(row, 5, btn_widget)
-
-        # Update click zone count
-        click_zone_count = self._get_click_zone_count()
-        self.click_zone_count_label.setText(f"当前配置: {click_zone_count} 个点击区域")
-
-    def _get_click_zone_count(self) -> int:
-        """Get the number of configured click zones from actions or global config."""
-        count = 0
-
-        # First check pet package zone_actions
-        for action in self.pet_package.actions:
-            if action.zone_actions:
-                count += len(action.zone_actions)
-
-        # If no zones in pet package, check global config
-        if count == 0 and self.config_manager:
-            click_detection = self.config_manager.config.get("click_detection", {})
-            zones_data = click_detection.get("zones", [])
-            count = len(zones_data)
-
-        return count
+        click = cfg.click_detection or {}
+        self.click_enabled_cb.setChecked(bool(click.get("enabled", False)))
+        self._click_zones_buffer = copy.deepcopy(click.get("zones", []))
+        self.click_zone_count_label.setText(
+            f"当前配置: {len(self._click_zones_buffer)} 个点击区域"
+        )
 
     def configure_click_zones(self):
-        """Open click zone configuration dialog."""
-        dialog = ClickZoneConfigDialog(
-            self.pet_package,
-            self.config_manager,
-            self
-        )
+        if self.pet_package is None:
+            QMessageBox.warning(self, "不可用", "当前实例的资源包不存在。")
+            return
+        dialog = ClickZoneConfigDialog(self.pet_package, parent=self)
+        zones = [ClickZoneConfig(**zone) for zone in self._click_zones_buffer]
+        dialog.zones = zones
+        dialog.overlay.zones = zones
+        dialog.update_zone_list()
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            dialog.save_to_pet_package()
-            click_zone_count = self._get_click_zone_count()
-            self.click_zone_count_label.setText(f"当前配置: {click_zone_count} 个点击区域")
-            QMessageBox.information(self, "配置成功", "点击区域配置已保存，重启应用后生效。")
+            self._click_zones_buffer = [
+                {
+                    "name": zone.name,
+                    "x": zone.x,
+                    "y": zone.y,
+                    "width": zone.width,
+                    "height": zone.height,
+                    "action": zone.action,
+                }
+                for zone in dialog.get_zones()
+            ]
+            self.click_zone_count_label.setText(
+                f"当前配置: {len(self._click_zones_buffer)} 个点击区域"
+            )
 
-    def select_image(self, image_type):
-        """Select image for specific type."""
-        dialog = AnimationSelectDialog(self.pet_package, self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            files = dialog.get_selected_files()
-            if files:
-                filename = files[0]
-                if image_type == 'regular':
-                    self.regular_image_edit.setText(filename)
-                    self.pet_package.meta.regular_image = filename
-                elif image_type == 'flying':
-                    self.flying_image_edit.setText(filename)
-                    self.pet_package.meta.flying_image = filename
-                elif image_type == 'rest':
-                    self.rest_animation_edit.setText(filename)
-                    self.pet_package.meta.rest_animation = filename
-
-    def select_walk_animation(self, direction):
-        """Select walk animation for direction."""
-        dialog = AnimationSelectDialog(self.pet_package, self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            files = dialog.get_selected_files()
-            if files:
-                filename = files[0]
-                # Find or create walk action
-                walk_action = None
-                for action in self.pet_package.actions:
-                    if action.name == "walk":
-                        walk_action = action
-                        break
-
-                if not walk_action:
-                    # Create walk action
-                    walk_action = PetAction(
-                        name="walk",
-                        type="movement",
-                        weight=1,
-                        animation_files=[],
-                        enabled=True,
-                        config={"min_distance": 30, "max_distance": 100}
-                    )
-                    self.pet_package.actions.append(walk_action)
-
-                if direction == 'left':
-                    if len(walk_action.animation_files) == 0:
-                        walk_action.animation_files.append(filename)
-                    else:
-                        walk_action.animation_files[0] = filename
-                    self.walk_left_label.setText(filename)
-                else:
-                    if len(walk_action.animation_files) < 2:
-                        while len(walk_action.animation_files) < 2:
-                            walk_action.animation_files.append(filename)
-                    else:
-                        walk_action.animation_files[1] = filename
-                    self.walk_right_label.setText(filename)
-
-    def add_action(self):
-        """Add new action."""
-        existing_names = [a.name for a in self.pet_package.actions]
-        dialog = ActionEditDialog(self.pet_package, self, existing_names=existing_names)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            action = dialog.get_action()
-            self.pet_package.actions.append(action)
-            self.load_pet_data()
-
-    def edit_action(self, action: PetAction):
-        """Edit existing action."""
-        dialog = ActionEditDialog(self.pet_package, self, action=action)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            updated = dialog.get_action()
-            action.weight = updated.weight
-            action.enabled = updated.enabled
-            action.animation_files = updated.animation_files
-            action.config = updated.config
-            self.load_pet_data()
-
-    def delete_action(self, action: PetAction):
-        """Delete an action."""
-        reply = QMessageBox.question(
-            self, "确认删除", f"确定要删除动作 '{action.name}' 吗?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        if reply == QMessageBox.StandardButton.Yes:
-            self.pet_package.actions = [a for a in self.pet_package.actions if a.name != action.name]
-            self.load_pet_data()
-
+    # ------------------------------------------------------------------
+    # 保存
+    # ------------------------------------------------------------------
     def save_config(self):
-        """Save pet configuration."""
+        """Validate, apply, and persist the instance configuration."""
         try:
-            # Save meta.json
-            meta_path = self.pet_package.path / "meta.json"
-            meta_data = {
-                "name": self.pet_package.meta.name,
-                "author": self.pet_package.meta.author,
-                "version": self.pet_package.meta.version,
-                "description": self.pet_package.meta.description,
-                "preview": self.pet_package.meta.preview,
-                "regular_image": self.regular_image_edit.text(),
-                "flying_image": self.flying_image_edit.text(),
-                "rest_animation": self.rest_animation_edit.text()
-            }
-            with open(meta_path, "w", encoding="utf-8") as f:
-                json.dump(meta_data, f, ensure_ascii=False, indent=2)
-
-            # Save actions.json
-            actions_path = self.pet_package.config_dir / "actions.json"
-            actions_data = {
-                "actions": [
-                    {
-                        "name": a.name,
-                        "type": a.type,
-                        "weight": a.weight,
-                        "animation_files": a.animation_files,
-                        "enabled": a.enabled,
-                        "config": a.config,
-                        "zone_actions": a.zone_actions
-                    }
-                    for a in self.pet_package.actions
-                ]
-            }
-            with open(actions_path, "w", encoding="utf-8") as f:
-                json.dump(actions_data, f, ensure_ascii=False, indent=2)
-
-            QMessageBox.information(self, "保存成功", "配置已保存，重启应用后生效。")
+            self._save_instance_config()
+            QMessageBox.information(self, "保存成功", "配置已保存，部分设置重启后生效。")
             self.back_to_list.emit()
-
         except Exception as e:
-            logging.error(f"Failed to save pet config: {e}")
+            logger.error(f"Failed to save pet config: {e}")
             QMessageBox.critical(self, "保存失败", f"保存配置时出错：{str(e)}")
+
+    def _save_instance_config(self):
+        """新模式：通过 platform 更新实例配置。"""
+        pet_id = self.instance_config.pet_id
+        updates = {
+            "package": self.package_combo.currentData(),
+            "position": {
+                "x": self.pos_x_spin.value(),
+                "y": self.pos_y_spin.value(),
+            },
+            "size": self.size_spin.value(),
+            "rest_reminder": {
+                "enabled": self.rest_enabled_cb.isChecked(),
+                "interval_minutes": self.rest_interval_spin.value(),
+                "countdown_seconds": self.countdown_spin.value(),
+                "intensity": self.rest_intensity_combo.currentData(),
+            },
+            "movement": {
+                "random_interval_min_ms": self.min_interval_spin.value(),
+                "random_interval_max_ms": self.max_interval_spin.value(),
+            },
+            "motion_mode": {
+                "enabled": self.motion_enabled_cb.isChecked(),
+                "default_mode": self.motion_default_mode_combo.currentData(),
+                "movement_speed": self.speed_spin.value(),
+            },
+            "behavior": {
+                "quiet_mode_enabled": self.quiet_mode_cb.isChecked(),
+                "default_head_action": self.head_action_edit.text() or "head",
+                "default_body_action": self.body_action_edit.text() or "body_tap",
+            },
+            "click_detection": {
+                "enabled": self.click_enabled_cb.isChecked(),
+                "zones": copy.deepcopy(self._click_zones_buffer),
+            },
+        }
+        updated = self.platform.update_instance_config(pet_id, updates)
+        self.instance_config = updated
+        self.pet_package = self.platform.pet_packages.get(updated.package)
+        self._click_zones_buffer = copy.deepcopy(
+            (updated.click_detection or {}).get("zones", [])
+        )

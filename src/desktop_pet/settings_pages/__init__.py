@@ -5,6 +5,7 @@ from .pet_config_page import PetConfigPage
 from .global_settings_page import GlobalSettingsPage
 from .new_pet_dialog import NewPetDialog
 from .action_control_page import ActionControlPage
+from .instance_manager_page import InstanceManagerPage
 
 __all__ = [
     'PetListPage',
@@ -12,4 +13,5 @@ __all__ = [
     'GlobalSettingsPage',
     'NewPetDialog',
     'ActionControlPage',
+    'InstanceManagerPage',
 ]

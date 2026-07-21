@@ -1,4 +1,4 @@
-"""Settings Center - Unified settings GUI for Desktop Pet."""
+"""Platform-owned settings center for desktop pet instances."""
 
 import logging
 from pathlib import Path
@@ -9,7 +9,10 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
-from .settings_pages import PetListPage, PetConfigPage, GlobalSettingsPage, ActionControlPage
+from .settings_pages import (
+    PetListPage, PetConfigPage, GlobalSettingsPage,
+    ActionControlPage, InstanceManagerPage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,13 +46,17 @@ NAV_BUTTON_STYLE = """
 class SettingsCenter(QDialog):
     """Main settings center dialog with navigation."""
 
-    def __init__(self, config_manager, pet_loader, pet=None, parent=None):
+    def __init__(self, platform, parent=None):
+        """Create the settings center for a PetPlatform."""
+        if platform is None or not hasattr(platform, "list_instances"):
+            raise TypeError("SettingsCenter requires a PetPlatform")
         super().__init__(parent)
-        self.config_manager = config_manager
-        self.pet_loader = pet_loader
-        self.pet = pet
-        self.current_pet_package = None
+        self.platform = platform
+        self.config_manager = platform.global_config
+        self.pet_loader = platform.pet_loader
+        self.current_pet_id = None
         self.pet_config_page = None
+        self.action_control_page = None
 
         self.setWindowTitle("桌面宠物设置")
         self.setMinimumSize(980, 720)
@@ -65,6 +72,9 @@ class SettingsCenter(QDialog):
         self.setup_ui()
         self.connect_signals()
 
+    # ------------------------------------------------------------------
+    # UI 构建
+    # ------------------------------------------------------------------
     def setup_ui(self):
         """Setup the main UI layout."""
         main_layout = QHBoxLayout(self)
@@ -78,27 +88,21 @@ class SettingsCenter(QDialog):
         # Right content area
         self.content_stack = QStackedWidget()
 
+        self.instance_manager_page = InstanceManagerPage(self.platform, self)
+        self.content_stack.addWidget(self.instance_manager_page)
+
         # Pet list page
         self.pet_list_page = PetListPage(
             self.config_manager,
             self.pet_loader,
-            self
+            platform=self.platform,
+            parent=self,
         )
         self.content_stack.addWidget(self.pet_list_page)
 
         # Global settings page
-        self.global_settings_page = GlobalSettingsPage(
-            self.config_manager,
-            self.pet,
-            self
-        )
+        self.global_settings_page = GlobalSettingsPage(self.platform, self)
         self.content_stack.addWidget(self.global_settings_page)
-
-        # Action control page
-        if self.pet:
-            self.action_control_page = ActionControlPage(self.pet, self)
-            self.content_stack.addWidget(self.action_control_page)
-            self.action_nav_btn.setEnabled(True)
 
         # Pet config page will be added when needed
 
@@ -127,10 +131,15 @@ class SettingsCenter(QDialog):
         nav_layout.addWidget(subtitle)
         nav_layout.addSpacing(22)
 
+        self.instance_nav_btn = QPushButton("实例管理")
+        self.instance_nav_btn.setCheckable(True)
+        self.instance_nav_btn.setChecked(True)
+        self.instance_nav_btn.setStyleSheet(NAV_BUTTON_STYLE)
+        nav_layout.addWidget(self.instance_nav_btn)
+
         # Pet nav button
         self.pet_nav_btn = QPushButton("宠物库")
         self.pet_nav_btn.setCheckable(True)
-        self.pet_nav_btn.setChecked(True)
         self.pet_nav_btn.setStyleSheet(NAV_BUTTON_STYLE)
         nav_layout.addWidget(self.pet_nav_btn)
 
@@ -144,7 +153,8 @@ class SettingsCenter(QDialog):
         self.action_nav_btn = QPushButton("动作控制")
         self.action_nav_btn.setCheckable(True)
         self.action_nav_btn.setStyleSheet(NAV_BUTTON_STYLE)
-        self.action_nav_btn.setEnabled(False)  # Disabled until pet is set
+        # 选择实例后启用
+        self.action_nav_btn.setEnabled(False)
         nav_layout.addWidget(self.action_nav_btn)
 
         nav_layout.addStretch()
@@ -153,6 +163,7 @@ class SettingsCenter(QDialog):
 
     def connect_signals(self):
         """Connect navigation signals."""
+        self.instance_nav_btn.clicked.connect(self.show_instance_manager_page)
         self.pet_nav_btn.clicked.connect(self.show_pet_page)
         self.global_nav_btn.clicked.connect(self.show_global_settings_page)
         self.action_nav_btn.clicked.connect(self.show_action_control_page)
@@ -161,58 +172,61 @@ class SettingsCenter(QDialog):
         self.pet_list_page.pet_selected.connect(self.on_pet_selected)
         self.pet_list_page.new_pet_requested.connect(self.on_new_pet_requested)
         self.pet_list_page.import_requested.connect(self.on_import_requested)
+        self.pet_list_page.instance_created.connect(self._on_instance_created_from_list)
+
+        # 实例管理页信号
+        self.instance_manager_page.instance_selected.connect(self._on_instance_selected)
+        self.instance_manager_page.create_instance_requested.connect(self._on_create_instance_requested)
+        self.instance_manager_page.instance_closed.connect(self._on_instance_closed)
+        self.instance_manager_page.instance_created.connect(self._on_instance_created_from_list)
+
+    # ------------------------------------------------------------------
+    # 页面切换
+    # ------------------------------------------------------------------
+    def _reset_nav_buttons(self):
+        """重置所有导航按钮的选中状态。"""
+        self.instance_nav_btn.setChecked(False)
+        self.pet_nav_btn.setChecked(False)
+        self.global_nav_btn.setChecked(False)
+        self.action_nav_btn.setChecked(False)
+
+    def show_instance_manager_page(self):
+        """显示实例管理页。"""
+        self._reset_nav_buttons()
+        self.instance_nav_btn.setChecked(True)
+        self.instance_manager_page.refresh_instances()
+        self.content_stack.setCurrentWidget(self.instance_manager_page)
 
     def show_pet_page(self):
         """Show pet list page."""
+        self._reset_nav_buttons()
         self.pet_nav_btn.setChecked(True)
-        self.global_nav_btn.setChecked(False)
-        self.action_nav_btn.setChecked(False)
+        self.pet_list_page.refresh_pets()
         self.content_stack.setCurrentWidget(self.pet_list_page)
 
     def show_global_settings_page(self):
         """Show global settings page."""
+        self._reset_nav_buttons()
         self.global_nav_btn.setChecked(True)
-        self.pet_nav_btn.setChecked(False)
-        self.action_nav_btn.setChecked(False)
         self.content_stack.setCurrentWidget(self.global_settings_page)
 
     def show_action_control_page(self):
         """Show action control page."""
-        if not self.pet:
+        if self.action_control_page is None:
             return
+        self._reset_nav_buttons()
         self.action_nav_btn.setChecked(True)
-        self.pet_nav_btn.setChecked(False)
-        self.global_nav_btn.setChecked(False)
         self.content_stack.setCurrentWidget(self.action_control_page)
-        self.action_control_page.refresh_all()
 
     def on_pet_selected(self, pet_package):
-        """Handle pet selection - enter config mode."""
-        self.current_pet_package = pet_package
-
-        # Check if pet config page exists, if not create it
-        if self.pet_config_page is None:
-            self.pet_config_page = PetConfigPage(
-                self.config_manager,
-                self.pet_loader,
-                pet_package,
-                self
-            )
-            self.pet_config_page.back_to_list.connect(self.on_back_to_list)
-            self.content_stack.addWidget(self.pet_config_page)
-        else:
-            self.pet_config_page.set_pet_package(pet_package)
-
-        self.pet_nav_btn.setChecked(True)
-        self.global_nav_btn.setChecked(False)
-        self.content_stack.setCurrentWidget(self.pet_config_page)
+        """Package cards are informational; instance creation uses their button."""
+        return
 
     def on_new_pet_requested(self):
         """Handle new pet creation request."""
         from .settings_pages import NewPetDialog
         dialog = NewPetDialog(self.config_manager, self.pet_loader, self)
         if dialog.exec() == dialog.Accepted:
-            # Refresh pet list
             self.pet_list_page.refresh_pets()
 
     def on_import_requested(self):
@@ -237,13 +251,10 @@ class SettingsCenter(QDialog):
             pets_path = get_pets_path()
 
             with tempfile.TemporaryDirectory() as temp_dir:
-                # Extract zip
                 with zipfile.ZipFile(file_path, 'r') as zf:
                     zf.extractall(temp_dir)
 
                 temp_path = Path(temp_dir)
-
-                # Validate structure
                 meta_files = list(temp_path.glob("*/meta.json"))
                 if not meta_files:
                     QMessageBox.warning(self, "导入失败", "资源包缺少 meta.json 文件")
@@ -256,7 +267,6 @@ class SettingsCenter(QDialog):
                     QMessageBox.warning(self, "导入失败", "资源包缺少 animations 目录")
                     return
 
-                # Read meta.json to get pet name
                 import json
                 with open(pet_dir / "meta.json", "r", encoding="utf-8") as f:
                     meta = json.load(f)
@@ -274,8 +284,14 @@ class SettingsCenter(QDialog):
                         return
                     shutil.rmtree(dest_dir)
 
-                # Copy to pets directory
                 shutil.copytree(pet_dir, dest_dir)
+
+                try:
+                    pkg = self.platform.pet_loader.load_pet(pet_name)
+                    if pkg is not None:
+                        self.platform.pet_packages[pkg.name] = pkg
+                except Exception as e:
+                    logger.warning(f"Failed to refresh platform packages: {e}")
 
                 self.pet_list_page.refresh_pets()
                 QMessageBox.information(self, "导入成功", f"桌宠 '{pet_name}' 导入成功！")
@@ -288,3 +304,70 @@ class SettingsCenter(QDialog):
         """Handle back to pet list."""
         self.pet_list_page.refresh_pets()
         self.show_pet_page()
+
+    # ------------------------------------------------------------------
+    # 新模式：实例选择与编辑
+    # ------------------------------------------------------------------
+    def _on_instance_selected(self, pet_id: str):
+        """实例管理页选中实例：构建/复用配置页与动作控制页。"""
+        self.current_pet_id = pet_id
+        instance_config = self.platform.get_instance_config(pet_id)
+        if instance_config is None:
+            logger.warning(f"Instance {pet_id} not found")
+            return
+
+        # 创建或更新 PetConfigPage
+        if self.pet_config_page is None:
+            self.pet_config_page = PetConfigPage(
+                instance_config=instance_config,
+                platform=self.platform,
+                parent=self,
+            )
+            self.pet_config_page.back_to_list.connect(self._on_back_to_instance_list)
+            self.content_stack.addWidget(self.pet_config_page)
+        else:
+            self.pet_config_page.set_instance(instance_config)
+
+        # 创建或更新 ActionControlPage
+        if self.action_control_page is None:
+            self.action_control_page = ActionControlPage(
+                instance_config=instance_config,
+                platform=self.platform,
+                parent=self,
+            )
+            self.content_stack.addWidget(self.action_control_page)
+        else:
+            self.action_control_page.set_instance(instance_config)
+
+        self.action_nav_btn.setEnabled(True)
+
+        # 默认跳转到配置页
+        self._reset_nav_buttons()
+        self.pet_nav_btn.setChecked(True)
+        self.content_stack.setCurrentWidget(self.pet_config_page)
+
+    def _on_back_to_instance_list(self):
+        """从实例配置页返回实例管理列表。"""
+        if self.instance_manager_page is not None:
+            self.instance_manager_page.refresh_instances()
+            self.show_instance_manager_page()
+        else:
+            self.show_pet_page()
+
+    def _on_create_instance_requested(self):
+        """实例管理页请求创建新实例：跳转到宠物库选择资源包。"""
+        self.show_pet_page()
+
+    def _on_instance_created_from_list(self, pet_id: str):
+        """宠物库或实例管理页创建实例成功后刷新。"""
+        if self.instance_manager_page is not None:
+            self.instance_manager_page.refresh_instances()
+        # 默认选中刚创建的实例
+        self._on_instance_selected(pet_id)
+
+    def _on_instance_closed(self, pet_id: str):
+        """实例被关闭后清理状态。"""
+        if self.current_pet_id == pet_id:
+            self.current_pet_id = None
+            # 关闭后回到实例管理页
+            self.show_instance_manager_page()

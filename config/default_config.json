@@ -1,4 +1,6 @@
 {
+  "instances": [],
+  "_instances_note": "实际实例配置存储在 config/instances.json，本字段仅作占位。每个实例独立配置包括 actions/rest_reminder/movement/behavior/motion_mode/click_detection/position/size 等。",
   "actions": {
     "walk": {
       "enabled": true,
@@ -120,7 +122,8 @@
   "mcp": {
     "enabled": true,
     "api_base": "http://127.0.0.1:8080/api",
-    "openclaw_webhook_url": "http://127.0.0.1:18789/pet-bubble-webhook",
-    "openclaw_peer": "boss"
+    "openclaw_webhook_url": "http://127.0.0.1:18789/webhooks/http-channel",
+    "openclaw_peer": "boss",
+    "openclaw_secret_token": ""
   }
 }

@@ -27,6 +27,55 @@ def resolve_pet_preview_path(pet_package) -> Path | None:
     return None
 
 
+PRIMARY_BUTTON_STYLE = """
+    QPushButton {
+        background: #2f7d68;
+        color: #ffffff;
+        border: none;
+        padding: 6px 12px;
+        border-radius: 4px;
+        font-weight: 600;
+    }
+    QPushButton:hover {
+        background: #256a58;
+    }
+    QPushButton:disabled {
+        background: #cfd8d3;
+        color: #f5f7f4;
+    }
+"""
+
+SECONDARY_BUTTON_STYLE = """
+    QPushButton {
+        background: white;
+        color: #2f7d68;
+        border: 1px solid #2f7d68;
+        padding: 6px 12px;
+        border-radius: 4px;
+    }
+    QPushButton:hover {
+        background: #edf5f1;
+    }
+    QPushButton:disabled {
+        color: #cfd8d3;
+        border-color: #cfd8d3;
+        background: #f5f7f4;
+    }
+"""
+
+CARD_STYLE = """
+    QFrame {
+        background: white;
+        border: 1px solid #e0e0e0;
+        border-radius: 12px;
+    }
+    QFrame:hover {
+        border-color: #2f7d68;
+        background: #fafafa;
+    }
+"""
+
+
 class PetListPage(QWidget):
     """Page displaying list of available pets as cards."""
 
@@ -34,11 +83,14 @@ class PetListPage(QWidget):
     pet_selected = pyqtSignal(object)  # PetPackage
     new_pet_requested = pyqtSignal()
     import_requested = pyqtSignal()
+    # 实例创建成功后发出，携带 pet_id（仅 platform 模式下有效）
+    instance_created = pyqtSignal(str)
 
-    def __init__(self, config_manager, pet_loader, parent=None):
+    def __init__(self, config_manager, pet_loader, platform=None, parent=None):
         super().__init__(parent)
         self.config_manager = config_manager
         self.pet_loader = pet_loader
+        self.platform = platform
         self.pets = []
         self.pet_cards = []
         self.preview_movies = []
@@ -53,9 +105,19 @@ class PetListPage(QWidget):
         layout.setSpacing(15)
 
         # Header
+        header_layout = QHBoxLayout()
         header = QLabel("您的桌宠")
         header.setStyleSheet("font-size: 20px; font-weight: bold; color: #333;")
-        layout.addWidget(header)
+        header_layout.addWidget(header)
+        header_layout.addStretch()
+
+        # 实例计数标签（仅 platform 模式下显示）
+        self.instance_count_label = QLabel("")
+        self.instance_count_label.setStyleSheet(
+            "font-size: 13px; color: #2f7d68; font-weight: 600;"
+        )
+        header_layout.addWidget(self.instance_count_label)
+        layout.addLayout(header_layout)
 
         # Scroll area for pet cards
         scroll = QScrollArea()
@@ -75,6 +137,24 @@ class PetListPage(QWidget):
         """Refresh the pet list."""
         self.pets = self.pet_loader.scan_pets()
         self._render_pet_cards()
+        self._refresh_instance_count()
+
+    def _refresh_instance_count(self):
+        """刷新已运行实例计数显示。"""
+        if self.platform is None:
+            self.instance_count_label.setText("")
+            return
+        try:
+            instances = self.platform.list_instances()
+        except Exception as e:
+            logger.warning(f"Failed to list instances: {e}")
+            self.instance_count_label.setText("")
+            return
+        count = len(instances)
+        if count > 0:
+            self.instance_count_label.setText(f"已有 {count} 个实例")
+        else:
+            self.instance_count_label.setText("")
 
     def _render_pet_cards(self):
         """Render pet cards in grid."""
@@ -88,12 +168,10 @@ class PetListPage(QWidget):
             movie.stop()
         self.preview_movies.clear()
 
-        current_pet = self.config_manager.get_current_pet_name()
-
         # Pet cards
         col = 0
         for pet in self.pets:
-            card = self._create_pet_card(pet, pet.name == current_pet)
+            card = self._create_pet_card(pet)
             self.cards_layout.addWidget(card, 0, col)
             self.pet_cards.append(card)
             col += 1
@@ -106,21 +184,11 @@ class PetListPage(QWidget):
         import_card = self._create_import_card()
         self.cards_layout.addWidget(import_card, 0, col + 1)
 
-    def _create_pet_card(self, pet_package, is_current=False) -> QFrame:
-        """Create a pet card widget."""
+    def _create_pet_card(self, pet_package) -> QFrame:
+        """Create a pet card widget。每张卡片包含预览与「创建实例」按钮。"""
         card = QFrame()
         card.setFixedSize(180, 230)
-        card.setStyleSheet("""
-            QFrame {
-                background: white;
-                border: 1px solid #e0e0e0;
-                border-radius: 12px;
-            }
-            QFrame:hover {
-                border-color: #0078d4;
-                background: #fafafa;
-            }
-        """)
+        card.setStyleSheet(CARD_STYLE)
 
         layout = QVBoxLayout(card)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -175,51 +243,18 @@ class PetListPage(QWidget):
 
         layout.addStretch()
 
-        # Current tag or switch button
-        if is_current:
-            current_label = QLabel("当前使用")
-            current_label.setStyleSheet("""
-                background: #0078d4;
-                color: white;
-                padding: 4px 8px;
-                border-radius: 4px;
-                font-size: 11px;
-            """)
-            current_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            layout.addWidget(current_label)
-
-            config_btn = QPushButton("配置")
-            config_btn.setStyleSheet("""
-                QPushButton {
-                    background: #0078d4;
-                    color: white;
-                    border: none;
-                    padding: 6px 12px;
-                    border-radius: 4px;
-                }
-                QPushButton:hover {
-                    background: #106ebe;
-                }
-            """)
-            config_btn.clicked.connect(lambda: self.pet_selected.emit(pet_package))
-            layout.addWidget(config_btn)
+        # 「创建实例」按钮：platform 为 None 时禁用
+        create_btn = QPushButton("创建实例")
+        create_btn.setEnabled(self.platform is not None)
+        if self.platform is not None:
+            create_btn.setStyleSheet(PRIMARY_BUTTON_STYLE)
         else:
-            switch_btn = QPushButton("切换使用")
-            switch_btn.setStyleSheet("""
-                QPushButton {
-                    background: white;
-                    color: #0078d4;
-                    border: 1px solid #0078d4;
-                    padding: 6px 12px;
-                    border-radius: 4px;
-                }
-                QPushButton:hover {
-                    background: #e3f2fd;
-                }
-            """)
-            switch_btn.clicked.connect(lambda: self._switch_to_pet(pet_package))
-            layout.addWidget(switch_btn)
+            create_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
+        create_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        create_btn.clicked.connect(lambda: self._create_instance_for(pet_package))
+        layout.addWidget(create_btn)
 
+        # 整张卡片点击：选中（用于查看详情）
         card.mousePressEvent = lambda e: self.pet_selected.emit(pet_package)
         card.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -236,7 +271,7 @@ class PetListPage(QWidget):
                 border-radius: 12px;
             }
             QFrame:hover {
-                border-color: #0078d4;
+                border-color: #2f7d68;
                 background: #e8f4fc;
             }
         """)
@@ -274,7 +309,7 @@ class PetListPage(QWidget):
                 border-radius: 12px;
             }
             QFrame:hover {
-                border-color: #0078d4;
+                border-color: #2f7d68;
                 background: #e8f4fc;
             }
         """)
@@ -301,7 +336,16 @@ class PetListPage(QWidget):
 
         return card
 
-    def _switch_to_pet(self, pet_package):
-        """Switch to a different pet."""
-        self.config_manager.set_current_pet(pet_package.name)
-        self.refresh_pets()
+    def _create_instance_for(self, pet_package):
+        """点击「创建实例」按钮：通过 platform 创建实例并发出信号。"""
+        if self.platform is None:
+            return
+        try:
+            pet_id = self.platform.create_instance(pet_package.name)
+        except Exception as e:
+            logger.error(f"Failed to create instance for {pet_package.name}: {e}")
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "创建失败", f"创建实例时出错：{e}")
+            return
+        self._refresh_instance_count()
+        self.instance_created.emit(pet_id)

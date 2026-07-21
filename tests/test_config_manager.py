@@ -1,171 +1,101 @@
-"""Tests for ConfigManager."""
+"""Tests for one-time migration from the removed standalone config manager."""
 import json
-import pytest
 from pathlib import Path
-from desktop_pet.config_manager import ConfigManager, ActionConfig, RestReminderConfig
+from unittest.mock import patch
+
+from desktop_pet.pet_loader import PetAction, PetMeta, PetPackage
+from desktop_pet.pet_platform import PetPlatform
 
 
-@pytest.fixture
-def temp_config_dir(tmp_path: Path) -> Path:
-    """Create a temporary config directory with test configs."""
-    config_dir = tmp_path / "config"
-    config_dir.mkdir()
-
-    default_config = {
-        "app": {"current_pet": "default"},
-        "pet": {
-            "size": 200,
-            "regular_image": "images/pet.png",
-            "flying_image": "images/pet_flying.png"
-        },
-        "rest_reminder": {
-            "enabled": True,
-            "interval_minutes": 55,
-            "countdown_seconds": 300,
-            "intensity": "normal"
-        },
-        "behavior": {
-            "quiet_mode_enabled": True,
-            "default_head_action": "head",
-            "default_body_action": "body_tap"
-        },
-        "movement": {
-            "random_interval_min_ms": 3000,
-            "random_interval_max_ms": 15000
-        },
-        "actions": {
-            "sit": {
-                "enabled": True,
-                "weight": 1,
-                "type": "animation",
-                "description": "Sit animation"
-            }
-        }
-    }
-
-    with open(config_dir / "default_config.json", "w", encoding="utf-8") as f:
-        json.dump(default_config, f)
-
-    return config_dir
-
-
-def test_config_manager_loads_default_config(temp_config_dir: Path):
-    """Test that ConfigManager loads default configuration."""
-    manager = ConfigManager(config_dir=temp_config_dir)
-
-    assert manager.pet.size == 200
-    assert manager.rest_reminder.enabled is True
-    assert manager.rest_reminder.interval_minutes == 55
-    assert manager.rest_reminder.intensity == "normal"
-    assert manager.behavior.quiet_mode_enabled is True
-    assert manager.behavior.default_head_action == "head"
-    assert manager.movement.random_interval_min_ms == 3000
-
-
-def test_config_manager_merges_user_config(temp_config_dir: Path):
-    """Test that user config overrides default config."""
-    user_config = {
-        "pet": {"size": 300},
-        "rest_reminder": {"interval_minutes": 30}
-    }
-
-    with open(temp_config_dir / "user_config.json", "w", encoding="utf-8") as f:
-        json.dump(user_config, f)
-
-    manager = ConfigManager(config_dir=temp_config_dir)
-
-    assert manager.pet.size == 300  # overridden
-    assert manager.rest_reminder.interval_minutes == 30  # overridden
-    assert manager.movement.random_interval_min_ms == 3000  # from default
-
-
-def test_config_manager_get_enabled_actions(temp_config_dir: Path):
-    """Test getting enabled actions."""
-    manager = ConfigManager(config_dir=temp_config_dir)
-    enabled = manager.get_enabled_actions()
-
-    assert len(enabled) == 1
-    assert enabled[0].name == "sit"
-
-
-def test_config_manager_set_current_pet(temp_config_dir: Path):
-    """Test setting current pet."""
-    manager = ConfigManager(config_dir=temp_config_dir)
-
-    manager.set_current_pet("custom_pet")
-
-    assert manager.get_current_pet_name() == "custom_pet"
-
-    # Verify it's saved to user config
-    with open(temp_config_dir / "user_config.json", encoding="utf-8") as f:
-        saved = json.load(f)
-
-    assert saved["app"]["current_pet"] == "custom_pet"
-
-
-def test_config_manager_get_weighted_random_action(temp_config_dir: Path):
-    """Test weighted random action selection."""
-    # Add multiple actions with different weights
-    config = {
-        "actions": {
-            "action1": {"enabled": True, "weight": 1, "type": "animation"},
-            "action2": {"enabled": True, "weight": 9, "type": "animation"},
-            "disabled": {"enabled": False, "weight": 100, "type": "animation"}
-        }
-    }
-
-    with open(temp_config_dir / "default_config.json", "w", encoding="utf-8") as f:
-        json.dump(config, f)
-
-    manager = ConfigManager(config_dir=temp_config_dir)
-
-    # Run multiple times and check that action2 is selected more often
-    results = {"action1": 0, "action2": 0}
-    for _ in range(100):
-        action = manager.get_weighted_random_action()
-        if action:
-            results[action.name] += 1
-
-    # action2 has 9x weight, should be selected ~90% of the time
-    assert results["action2"] > results["action1"] * 5
-    assert results.get("disabled", 0) == 0
-
-
-def test_config_manager_saves_global_settings_without_dropping_existing_sections(temp_config_dir: Path):
-    """Saving global settings should preserve unrelated user config sections."""
-    existing_config = {
-        "app": {"current_pet": "default"},
-        "click_detection": {"enabled": True, "zones": [{"name": "head"}]},
-        "actions": {"sit": {"enabled": False}},
-    }
-    with open(temp_config_dir / "user_config.json", "w", encoding="utf-8") as f:
-        json.dump(existing_config, f)
-
-    manager = ConfigManager(config_dir=temp_config_dir)
-    manager.save_global_settings(
-        {
-            "motion_mode": {"default_mode": "motion", "movement_speed": 6},
-            "movement": {"random_interval_min_ms": 4000, "random_interval_max_ms": 12000},
-            "rest_reminder": {
-                "enabled": False,
-                "interval_minutes": 30,
-                "countdown_seconds": 180,
-                "intensity": "gentle",
-            },
-            "behavior": {"quiet_mode_enabled": False},
-            "startup": {"enabled": True},
-            "tray": {"enabled": True, "minimize_to_tray": False},
-            "api": {"enabled": True, "host": "127.0.0.1", "port": 8080, "allowed_ips": ["127.0.0.1"]},
-        }
+def make_package(tmp_path: Path) -> PetPackage:
+    package_path = tmp_path / "pets" / "default"
+    return PetPackage(
+        name="default",
+        path=package_path,
+        meta=PetMeta(
+            name="default",
+            author="tester",
+            version="1.0",
+            description="test",
+            regular_image="idle.png",
+            flying_image="flying.png",
+            rest_animation="rest.webp",
+        ),
+        actions=[
+            PetAction(
+                name="sit",
+                type="animation",
+                weight=1,
+                animation_files=["animations/sit.webp"],
+                enabled=True,
+                config={"base": True},
+                zone_actions={},
+            )
+        ],
+        animations_dir=package_path / "animations",
+        config_dir=package_path / "config",
     )
 
-    with open(temp_config_dir / "user_config.json", encoding="utf-8") as f:
-        saved = json.load(f)
 
-    assert saved["app"] == existing_config["app"]
-    assert saved["click_detection"] == existing_config["click_detection"]
-    assert saved["actions"] == existing_config["actions"]
-    assert saved["behavior"]["quiet_mode_enabled"] is False
-    assert saved["rest_reminder"]["intensity"] == "gentle"
-    assert saved["api"]["host"] == "127.0.0.1"
-    assert saved["tray"]["minimize_to_tray"] is False
+def test_legacy_config_migrates_supported_instance_fields_once(tmp_path: Path):
+    package = make_package(tmp_path)
+    legacy = {
+        "app": {"current_pet": "default"},
+        "pet": {"size": 260},
+        "rest_reminder": {"enabled": False, "interval_minutes": 30},
+        "movement": {"random_interval_min_ms": 4000},
+        "behavior": {"quiet_mode_enabled": True},
+        "motion_mode": {"default_mode": "motion", "movement_speed": 8},
+        "click_detection": {
+            "enabled": True,
+            "zones": [
+                {
+                    "name": "head", "x": 0.1, "y": 0.1,
+                    "width": 0.2, "height": 0.2, "action": "sit"
+                }
+            ],
+        },
+        "display": {"last_screen_index": 2},
+        "actions": {
+            "sit": {
+                "enabled": False, "weight": 7, "type": "animation",
+                "config": {"legacy": True},
+                "animation_files": ["C:/legacy/unsafe.gif"],
+            },
+            "unknown": {"enabled": True},
+        },
+    }
+    (tmp_path / "user_config.json").write_text(json.dumps(legacy), encoding="utf-8")
+
+    with patch("desktop_pet.pet_platform.PetLoader") as loader_cls:
+        loader_cls.return_value.scan_pets.return_value = [package]
+        loader_cls.return_value.load_pet.return_value = package
+        platform = PetPlatform(config_dir=tmp_path)
+        platform.start()
+
+    instances = platform.list_instances()
+    assert len(instances) == 1
+    config = instances[0]
+    assert config.primary is True
+    assert config.package == "default"
+    assert config.size == 260
+    assert config.screen_index == 2
+    assert config.rest_reminder["interval_minutes"] == 30
+    assert config.movement["random_interval_min_ms"] == 4000
+    assert config.behavior["quiet_mode_enabled"] is True
+    assert config.motion_mode["default_mode"] == "motion"
+    assert config.click_detection["zones"][0]["action"] == "sit"
+    assert config.actions["sit"]["enabled"] is False
+    assert config.actions["sit"]["weight"] == 7
+    assert config.actions["sit"]["config"] == {"legacy": True}
+    assert config.actions["sit"]["animation_files"] == ["animations/sit.webp"]
+    assert "unknown" not in config.actions
+
+    legacy["pet"]["size"] = 500
+    (tmp_path / "user_config.json").write_text(json.dumps(legacy), encoding="utf-8")
+    with patch("desktop_pet.pet_platform.PetLoader") as loader_cls:
+        loader_cls.return_value.scan_pets.return_value = [package]
+        loader_cls.return_value.load_pet.return_value = package
+        restarted = PetPlatform(config_dir=tmp_path)
+        restarted.start()
+    assert restarted.list_instances()[0].size == 260

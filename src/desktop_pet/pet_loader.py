@@ -40,11 +40,17 @@ class PetPackage:
 
 
 class PetLoader:
+    """宠物包加载器。
+
+    职责：扫描、校验、加载宠物包（PetPackage）。
+    不再持有“当前桌宠”状态——多实例场景下“当前”由
+    :class:`PetPlatform` / :class:`InstancesStore` 管理。
+    """
+
     def __init__(self, pets_dir: Path | None = None):
         if pets_dir is None:
             pets_dir = get_pets_path()
         self.pets_dir = Path(pets_dir)
-        self._current_pet: PetPackage | None = None
 
     def scan_pets(self) -> list[PetPackage]:
         pets = []
@@ -152,12 +158,6 @@ class PetLoader:
             pass
 
         return actions
-
-    def get_current_pet(self) -> PetPackage | None:
-        return self._current_pet
-
-    def set_current_pet(self, pet_package: PetPackage | None) -> None:
-        self._current_pet = pet_package
 
     def get_pet_by_name(self, pet_name: str) -> PetPackage | None:
         return self.load_pet(pet_name)

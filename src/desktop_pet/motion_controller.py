@@ -28,10 +28,24 @@ class MotionModeController(QObject):
         self._mode = "random"
         self._listeners: list[MotionModeListener] = []
         self._animation_wait = True
+        self._movement_speed = 5
 
     @property
     def mode(self) -> str:
         return self._mode
+
+    @property
+    def movement_speed(self) -> int:
+        return self._movement_speed
+
+    @property
+    def animation_wait(self) -> bool:
+        return self._animation_wait
+
+    def configure(self, *, default_mode: str, movement_speed: int, animation_wait: bool) -> None:
+        self._mode = default_mode
+        self._movement_speed = movement_speed
+        self._animation_wait = animation_wait
 
     def set_mode(self, mode: str) -> bool:
         if mode not in ("random", "motion"):
@@ -76,7 +90,12 @@ class MotionModeController(QObject):
         if self._mode != "motion":
             return False
 
-        action = self._pet.current_pet_package.actions if self._pet.current_pet_package else []
+        if self._animation_wait:
+            movie = getattr(self._pet, "current_gif", None)
+            if movie is not None and getattr(movie.state(), "name", "") == "Running":
+                return False
+
+        action = getattr(self._pet, "effective_actions", [])
         found_action = None
         for a in action:
             if a.name == name:
@@ -127,9 +146,7 @@ class MotionModeController(QObject):
         return self._pet.state.value
 
     def get_available_animations(self) -> list:
-        if not self._pet.current_pet_package:
-            return []
-        return [a.name for a in self._pet.current_pet_package.actions if a.type == "animation" and a.enabled]
+        return [a.name for a in getattr(self._pet, "effective_actions", []) if a.type == "animation" and a.enabled]
 
     def add_listener(self, listener: MotionModeListener) -> None:
         if listener not in self._listeners:

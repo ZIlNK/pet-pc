@@ -3,6 +3,7 @@ import ipaddress
 import json
 import logging
 import os
+import threading
 from collections import deque
 from datetime import datetime
 from typing import Optional
@@ -11,20 +12,62 @@ from urllib.parse import urlparse
 import aiohttp
 from aiohttp import web
 from aiohttp.web import Request, Response
+from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
 from .motion_controller import MotionModeController
+from .instances_store import InstancesStoreError
+from .pet_instance import (
+    InstanceConfigError,
+    InstanceConflictError,
+    InstanceNotFoundError,
+    PackageNotFoundError,
+)
 
 logger = logging.getLogger(__name__)
 
-# ── OpenClaw pet-bubble channel webhook（简化方案 v0.4） ─────────
-# 桌宠用户消息直接 POST 到 OpenClaw channel plugin webhook，无需文件钩子。
-DEFAULT_OPENCLAW_WEBHOOK_URL = "http://127.0.0.1:18789/pet-bubble-webhook"
+
+class _MainThreadInvoker(QObject):
+    """在主线程创建的 QObject，通过 signal 把 callable 投递到主线程执行。
+
+    解决 ``QTimer.singleShot`` 在子线程不触发的 bug（详见 pet.py 同名注释）：
+    API server 跑在子线程的 asyncio loop 里，``QTimer.singleShot(0, ...)``
+    创建的 timer 属于子线程，而子线程没有 Qt 事件循环，timer 永远不触发。
+
+    用 ``pyqtSignal`` + QueuedConnection 是项目既定的跨线程调度方案：
+    signal emit 在子线程调用时，slot 会在 receiver 所在线程（主线程）执行。
+    """
+
+    call_requested = pyqtSignal(object)
+
+    def __init__(self):
+        super().__init__()
+        # 跨线程连接默认就是 QueuedConnection，显式声明以便阅读
+        from PyQt6.QtCore import Qt
+
+        self.call_requested.connect(self._on_call, Qt.ConnectionType.QueuedConnection)
+
+    def _on_call(self, payload: tuple):
+        """主线程 slot：执行 func 并把结果回传到 asyncio loop。"""
+        func, loop, future = payload
+        try:
+            result = func()
+            loop.call_soon_threadsafe(future.set_result, result)
+        except Exception as e:
+            loop.call_soon_threadsafe(future.set_exception, e)
+
+# ── OpenClaw http-channel 双向 webhook ──────────────────────────
+# 出站方向：用户消息 POST 到 OpenClaw openclaw-http-channel 插件的入站 webhook。
+# 入站方向：Agent 回复由插件出站适配器 POST 到 /api/openclaw/reply 接收端。
+DEFAULT_OPENCLAW_WEBHOOK_URL = "http://127.0.0.1:18789/webhooks/http-channel"
 DEFAULT_OPENCLAW_PEER = "boss"
 
 
 class ApiServer:
-    def __init__(self, pet):
-        self._pet = pet
+    def __init__(self, platform):
+        """Create a platform-owned API server."""
+        if platform is None:
+            raise TypeError("ApiServer requires a PetPlatform")
+        self._platform = platform
         self._app: Optional[web.Application] = None
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
@@ -33,14 +76,63 @@ class ApiServer:
         self._port = 8080
         self._allowed_ips: list[str] = ["127.0.0.1", "::1"]
         self._trust_proxy_headers = False
-        # LLM 对话历史（按 session_id 隔离）
         self._chat_histories: dict[str, deque] = {}
-        # 用户消息队列（来自 ChatBubble 的用户输入）
         self._user_messages: deque = deque(maxlen=100)
-        # OpenClaw pet-bubble channel 配置
         self._openclaw_webhook_url = DEFAULT_OPENCLAW_WEBHOOK_URL
         self._openclaw_peer = DEFAULT_OPENCLAW_PEER
+        self._openclaw_secret_token: str = ""
         self._openclaw_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._main_thread_invoker = _MainThreadInvoker()
+        self._thread: Optional[threading.Thread] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._lifecycle_lock = threading.RLock()
+        self._startup_event: Optional[threading.Event] = None
+        self._startup_error: Optional[BaseException] = None
+        self._startup_task: Optional[asyncio.Task] = None
+        self._stop_requested = threading.Event()
+        self._last_error: Optional[BaseException] = None
+
+    def _resolve_pet_sync(self, pet_id: str | None = None):
+        if pet_id:
+            return self._platform.get_pet_widget(pet_id)
+        primary = self._platform.get_primary_instance()
+        if primary is None:
+            return None
+        return self._platform.get_pet_widget(primary.pet_id)
+
+    async def _resolve_pet(self, request: Request):
+        pet_id = request.match_info.get("pet_id") or request.query.get("pet_id")
+        return await self._run_in_main_thread(lambda: self._resolve_pet_sync(pet_id))
+
+    async def _resolve_pet_from_args(self, args: dict):
+        pet_id = args.get("pet_id")
+        return await self._run_in_main_thread(lambda: self._resolve_pet_sync(pet_id))
+
+    async def _run_in_main_thread(self, func):
+        if QThread.currentThread() == self._main_thread_invoker.thread():
+            return func()
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+        self._main_thread_invoker.call_requested.emit((func, loop, future))
+        return await future
+
+    @staticmethod
+    def _pet_not_found_response() -> Response:
+        return web.json_response({"error": "pet not found"}, status=404)
+
+    @staticmethod
+    def _status_for_error(error: BaseException) -> int:
+        if isinstance(error, (InstanceNotFoundError, PackageNotFoundError)):
+            return 404
+        if isinstance(error, InstanceConflictError):
+            return 409
+        if isinstance(error, (InstanceConfigError, ValueError, TypeError, json.JSONDecodeError)):
+            return 400
+        return 500
+
+    @classmethod
+    def _error_response(cls, error: BaseException) -> Response:
+        return web.json_response({"error": str(error)}, status=cls._status_for_error(error))
 
     def configure(self, host: str, port: int) -> None:
         self._host = host
@@ -63,57 +155,205 @@ class ApiServer:
     def get_allowed_ips(self) -> list[str]:
         return self._allowed_ips.copy()
 
-    def set_openclaw_config(self, webhook_url: str, peer: str) -> None:
-        """配置 OpenClaw pet-bubble channel webhook 地址和 peer"""
+    def set_openclaw_config(self, webhook_url: str, peer: str, secret_token: str = "") -> None:
         if webhook_url:
             self._openclaw_webhook_url = webhook_url
         if peer:
             self._openclaw_peer = peer
+        if secret_token:
+            self._openclaw_secret_token = secret_token
 
     @property
     def is_running(self) -> bool:
         return self._running
 
+    @property
+    def last_error(self) -> Optional[BaseException]:
+        return self._last_error
+
     async def start(self) -> bool:
         if self._running:
             return True
-
+        self._last_error = None
         self._app = web.Application()
         self._setup_ip_filter()
         self._setup_routes()
         self._setup_cors()
-
         self._runner = web.AppRunner(self._app)
-        await self._runner.setup()
-
-        self._site = web.TCPSite(self._runner, self._host, self._port)
         try:
+            await self._runner.setup()
+            self._site = web.TCPSite(self._runner, self._host, self._port)
             await self._site.start()
-            self._running = True
-            self._openclaw_loop = asyncio.get_running_loop()
-            logger.info(f"API server started: http://{self._host}:{self._port}")
-            logger.info(f"IP whitelist: {self._allowed_ips}")
-            logger.info(f"OpenClaw webhook: {self._openclaw_webhook_url}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to start API server: {e}")
+        except BaseException as error:
+            self._last_error = error
+            logger.error("Failed to start API server: %s", error)
+            if self._runner is not None:
+                try:
+                    await self._runner.cleanup()
+                except Exception:
+                    logger.exception("Failed to clean up API runner after startup failure")
+            self._app = None
+            self._runner = None
+            self._site = None
+            self._running = False
             return False
+        self._running = True
+        self._openclaw_loop = asyncio.get_running_loop()
+        logger.info("API server started: http://%s:%s", self._host, self._port)
+        return True
 
     async def stop(self) -> bool:
-        if not self._running:
-            return True
-
-        if self._site:
-            await self._site.stop()
-        if self._runner:
-            await self._runner.cleanup()
-
-        self._running = False
-        self._app = None
-        self._runner = None
-        self._site = None
+        site, runner = self._site, self._runner
+        error: BaseException | None = None
+        try:
+            if site is not None:
+                try:
+                    await site.stop()
+                except Exception as exc:
+                    error = exc
+            if runner is not None:
+                try:
+                    await runner.cleanup()
+                except Exception as exc:
+                    if error is None:
+                        error = exc
+        finally:
+            self._site = None
+            self._runner = None
+            self._app = None
+            self._running = False
+            self._openclaw_loop = None
+        if error is not None:
+            self._last_error = error
+            logger.error("Failed to stop API server: %s", error)
+            return False
         logger.info("API server stopped")
         return True
+
+    def _background_main(self, startup_event: threading.Event) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        startup_task = loop.create_task(self.start())
+        with self._lifecycle_lock:
+            self._loop = loop
+            self._startup_task = startup_task
+        started = False
+        try:
+            started = bool(loop.run_until_complete(startup_task))
+            if not started and self._startup_error is None:
+                self._startup_error = self._last_error or RuntimeError("API server failed to start")
+        except asyncio.CancelledError:
+            if self._startup_error is None:
+                self._startup_error = self._last_error or TimeoutError("API server startup cancelled")
+        except BaseException as error:
+            self._startup_error = error
+            self._last_error = error
+            logger.exception("API background thread failed during startup")
+        finally:
+            with self._lifecycle_lock:
+                if self._startup_task is startup_task:
+                    self._startup_task = None
+            startup_event.set()
+        try:
+            if started and not self._stop_requested.is_set():
+                loop.run_forever()
+        finally:
+            if not startup_task.done():
+                startup_task.cancel()
+                loop.run_until_complete(asyncio.gather(startup_task, return_exceptions=True))
+            if self._running or self._runner is not None:
+                try:
+                    loop.run_until_complete(self.stop())
+                except Exception as error:
+                    self._last_error = error
+                    logger.exception("API background cleanup failed")
+            pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            loop.close()
+            with self._lifecycle_lock:
+                if self._loop is loop:
+                    self._loop = None
+                if self._thread is threading.current_thread():
+                    self._thread = None
+                self._startup_event = None
+                self._startup_task = None
+
+    def start_background(self, timeout: float = 5) -> bool:
+        with self._lifecycle_lock:
+            if self._running:
+                return True
+            if self._thread is not None and self._thread.is_alive():
+                event = self._startup_event
+                thread = self._thread
+            else:
+                self._startup_error = None
+                self._last_error = None
+                self._stop_requested.clear()
+                event = threading.Event()
+                self._startup_event = event
+                thread = threading.Thread(
+                    target=self._background_main,
+                    args=(event,),
+                    daemon=True,
+                    name="desktop-pet-api",
+                )
+                self._thread = thread
+                thread.start()
+        if event is not None and event.wait(timeout):
+            return self._running and self._startup_error is None
+
+        timeout_error = TimeoutError("API server startup timed out")
+        self._startup_error = timeout_error
+        self._last_error = timeout_error
+        self._stop_requested.set()
+        with self._lifecycle_lock:
+            loop = self._loop
+            startup_task = self._startup_task
+        if loop is not None and loop.is_running():
+            if startup_task is not None:
+                loop.call_soon_threadsafe(startup_task.cancel)
+            else:
+                loop.call_soon_threadsafe(loop.stop)
+        if thread is not threading.current_thread():
+            thread.join(timeout)
+        return False
+
+    def stop_background(self, timeout: float = 5) -> bool:
+        with self._lifecycle_lock:
+            thread = self._thread
+            loop = self._loop
+        if thread is None:
+            if self._running:
+                self._last_error = RuntimeError("API server was not started in background")
+                return False
+            return True
+        if thread is threading.current_thread():
+            self._last_error = RuntimeError("stop_background cannot run on the API server thread")
+            return False
+
+        self._stop_requested.set()
+        success = True
+        if loop is not None and loop.is_running():
+            async def stop_and_halt():
+                stopped = await self.stop()
+                loop.call_soon(loop.stop)
+                return stopped
+
+            try:
+                future = asyncio.run_coroutine_threadsafe(stop_and_halt(), loop)
+                success = bool(future.result(timeout=timeout))
+            except Exception as error:
+                self._last_error = error
+                logger.exception("Failed to stop API server in background")
+                success = False
+        thread.join(timeout)
+        if thread.is_alive():
+            self._last_error = TimeoutError("API server thread did not stop")
+            return False
+        return success and not self._running
 
     def _get_client_ip(self, request: Request) -> str:
         """Get real client IP, considering proxy headers."""
@@ -161,6 +401,7 @@ class ApiServer:
         if self._app is None:
             return
 
+        # 旧版单宠物路由（保留，向后兼容）
         self._app.router.add_get("/api/status", self.handle_status)
         self._app.router.add_get("/api/screens", self.handle_screens)
         self._app.router.add_post("/api/mode", self.handle_mode)
@@ -170,6 +411,28 @@ class ApiServer:
         self._app.router.add_post("/api/animation", self.handle_animation)
         self._app.router.add_post("/api/walk", self.handle_walk)
         self._app.router.add_get("/api/animations", self.handle_animations_list)
+
+        # 多宠物路由：/api/pets/{pet_id}/<endpoint>
+        # handler 内通过 _resolve_pet 统一解析 pet_id
+        self._app.router.add_get("/api/pets/{pet_id}/status", self.handle_status)
+        self._app.router.add_post("/api/pets/{pet_id}/mode", self.handle_mode)
+        self._app.router.add_post("/api/pets/{pet_id}/move", self.handle_move)
+        self._app.router.add_post("/api/pets/{pet_id}/move_by", self.handle_move_by)
+        self._app.router.add_post("/api/pets/{pet_id}/move_edge", self.handle_move_edge)
+        self._app.router.add_post("/api/pets/{pet_id}/animation", self.handle_animation)
+        self._app.router.add_post("/api/pets/{pet_id}/walk", self.handle_walk)
+        self._app.router.add_get("/api/pets/{pet_id}/animations", self.handle_animations_list)
+        self._app.router.add_post("/api/pets/{pet_id}/chat_bubble/show", self.handle_show_chat_bubble)
+        self._app.router.add_post("/api/pets/{pet_id}/chat_bubble/hide", self.handle_hide_chat_bubble)
+        self._app.router.add_post("/api/pets/{pet_id}/message", self.handle_show_message)
+        self._app.router.add_post("/api/pets/{pet_id}/message/hide", self.handle_hide_message)
+
+        # 实例管理端点
+        self._app.router.add_get("/api/instances", self.handle_list_instances)
+        self._app.router.add_post("/api/instances", self.handle_create_instance)
+        self._app.router.add_get("/api/instances/{pet_id}", self.handle_get_instance)
+        self._app.router.add_patch("/api/instances/{pet_id}", self.handle_update_instance)
+        self._app.router.add_delete("/api/instances/{pet_id}", self.handle_delete_instance)
 
         # AI tool-calling endpoints
         self._app.router.add_get("/api/tools", self.handle_tools_list)
@@ -183,6 +446,9 @@ class ApiServer:
         self._app.router.add_post("/api/chat_bubble/show", self.handle_show_chat_bubble)
         self._app.router.add_post("/api/chat_bubble/hide", self.handle_hide_chat_bubble)
 
+        # OpenClaw http-channel 接收端：接收 Agent 回复推送
+        self._app.router.add_post("/api/openclaw/reply", self.handle_openclaw_reply)
+
     def _setup_cors(self) -> None:
         if self._app is None:
             return
@@ -195,41 +461,44 @@ class ApiServer:
                 response = await handler(request)
 
             response.headers["Access-Control-Allow-Origin"] = "*"
-            response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, DELETE, OPTIONS"
             response.headers["Access-Control-Allow-Headers"] = "Content-Type"
             return response
 
         self._app.middlewares.append(cors_middleware)
 
     def _validate_coordinates(self, data: dict) -> tuple[int, int] | None:
-        """Validate and sanitize coordinate values."""
-        try:
-            x = int(data.get("x", 0))
-            y = int(data.get("y", 0))
-
-            # Basic sanity check (negative coords allowed for off-screen moves)
-            if x < -10000 or x > 10000 or y < -10000 or y > 10000:
-                return None
-
-            return x, y
-        except (ValueError, TypeError):
+        """Validate required integer coordinates."""
+        if "x" not in data or "y" not in data:
             return None
+        x, y = data.get("x"), data.get("y")
+        if type(x) is not int or type(y) is not int:
+            return None
+        if not (-10000 <= x <= 10000 and -10000 <= y <= 10000):
+            return None
+        return x, y
 
     def _validate_delta(self, data: dict) -> tuple[int, int] | None:
-        """Validate movement delta values."""
-        try:
-            dx = int(data.get("dx", 0))
-            dy = int(data.get("dy", 0))
-            return dx, dy
-        except (ValueError, TypeError):
+        """Validate required integer movement deltas."""
+        if "dx" not in data or "dy" not in data:
             return None
+        dx, dy = data.get("dx"), data.get("dy")
+        if type(dx) is not int or type(dy) is not int:
+            return None
+        if not (-10000 <= dx <= 10000 and -10000 <= dy <= 10000):
+            return None
+        return dx, dy
 
-    def _parse_screen_index(self, data: dict) -> int | None:
+    def _parse_screen_index(self, data: dict, pet=None) -> int | None:
         """从请求数据中解析 screen 字段(可选)。
 
         - 缺省 / null / 非法类型:返回 None(自动按坐标选屏)
         - 整数:返回 int(越界由调用方处理)
         - 越界整数:返回 -1(标记为非法,调用方返回 400)
+
+        Args:
+            data: 请求数据 dict。
+            pet: target pet widget used to validate the screen index.
         """
         if "screen" not in data:
             return None
@@ -240,7 +509,7 @@ class ApiServer:
             idx = int(raw)
         except (ValueError, TypeError):
             return -1
-        sm = getattr(self._pet, "screen_manager", None)
+        sm = getattr(pet, "screen_manager", None)
         if sm is None:
             return idx
         if sm.screen_by_index(idx) is None:
@@ -278,192 +547,313 @@ class ApiServer:
         except Exception:
             return False
 
+    async def _run_pet_operation(self, request: Request, operation):
+        pet_id = request.match_info.get("pet_id") or request.query.get("pet_id")
+
+        def invoke():
+            pet = self._resolve_pet_sync(pet_id)
+            if pet is None:
+                raise InstanceNotFoundError(f"pet not found: {pet_id or 'primary'}")
+            return operation(pet)
+
+        return await self._run_in_main_thread(invoke)
+
     async def handle_status(self, request: Request) -> Response:
-        position = self._pet.api.get_position()
-        state = self._pet.api.get_state()
-        mode = self._pet.api.get_mode()
-        animations = self._pet.api.get_available_animations()
-
-        screens = []
-        current_screen = position.get("screen", -1)
-        sm = getattr(self._pet, "screen_manager", None)
-        if sm is not None:
-            try:
-                screens = [s.to_dict() for s in sm.all_screens()]
-            except Exception:
-                screens = []
-
-        return web.json_response({
-            "position": position,
-            "state": state,
-            "mode": mode,
-            "animations": animations,
-            "current_screen": current_screen,
-            "screens": screens,
-        })
+        try:
+            def collect(pet):
+                position = pet.api.get_position()
+                sm = getattr(pet, "screen_manager", None)
+                screens = [screen.to_dict() for screen in sm.all_screens()] if sm else []
+                return {
+                    "position": position,
+                    "state": pet.api.get_state(),
+                    "mode": pet.api.get_mode(),
+                    "animations": pet.api.get_available_animations(),
+                    "current_screen": position.get("screen", -1),
+                    "screens": screens,
+                }
+            return web.json_response(await self._run_pet_operation(request, collect))
+        except Exception as error:
+            return self._error_response(error)
 
     async def handle_screens(self, request: Request) -> Response:
-        sm = getattr(self._pet, "screen_manager", None)
-        if sm is None:
-            return web.json_response({"screens": [], "current_screen": -1})
         try:
-            screens = [s.to_dict() for s in sm.all_screens()]
-        except Exception:
-            screens = []
-        pos = self._pet.api.get_position()
-        return web.json_response({
-            "screens": screens,
-            "current_screen": pos.get("screen", -1),
-        })
+            def collect(pet):
+                sm = getattr(pet, "screen_manager", None)
+                position = pet.api.get_position()
+                return {
+                    "screens": [screen.to_dict() for screen in sm.all_screens()] if sm else [],
+                    "current_screen": position.get("screen", -1),
+                }
+            return web.json_response(await self._run_pet_operation(request, collect))
+        except Exception as error:
+            return self._error_response(error)
 
     async def handle_mode(self, request: Request) -> Response:
         try:
             data = await request.json()
-            mode = data.get("mode")
-            if mode not in ("random", "motion"):
-                return web.json_response({"success": False, "error": "Invalid mode"}, status=400)
-
-            success = self._pet.api.set_mode(mode)
-            return web.json_response({"success": success})
-        except Exception as e:
-            return web.json_response({"success": False, "error": str(e)}, status=400)
+            if not isinstance(data, dict):
+                raise InstanceConfigError("JSON body must be an object")
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON body"}, status=400)
+        mode = data.get("mode")
+        if mode not in ("random", "motion"):
+            return web.json_response({"success": False, "error": "Invalid mode"}, status=400)
+        try:
+            success = await self._run_pet_operation(request, lambda pet: pet.api.set_mode(mode))
+            return web.json_response({"success": bool(success)})
+        except Exception as error:
+            return self._error_response(error)
 
     async def handle_move(self, request: Request) -> Response:
         try:
             data = await request.json()
-            coords = self._validate_coordinates(data)
-            if coords is None:
-                return web.json_response({"success": False, "error": "Invalid coordinates"}, status=400)
-
-            x, y = coords
-            screen = self._parse_screen_index(data)
-            if screen == -1:
-                return web.json_response({"success": False, "error": "screen index out of range"}, status=400)
-
-            if self._pet.api.get_mode() != "motion":
-                self._pet.api.set_mode("motion")
-
-            success = self._pet.api.move_to(x, y, screen)
-            return web.json_response({"success": success})
-        except Exception as e:
-            return web.json_response({"success": False, "error": str(e)}, status=400)
+            if not isinstance(data, dict):
+                raise InstanceConfigError("JSON body must be an object")
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON body"}, status=400)
+        coords = self._validate_coordinates(data)
+        if coords is None:
+            return web.json_response({"success": False, "error": "Invalid coordinates"}, status=400)
+        x, y = coords
+        try:
+            def move(pet):
+                screen = self._parse_screen_index(data, pet)
+                if screen == -1:
+                    raise InstanceConfigError("screen index out of range")
+                if pet.api.get_mode() != "motion":
+                    pet.api.set_mode("motion")
+                return pet.api.move_to(x, y, screen)
+            success = await self._run_pet_operation(request, move)
+            return web.json_response({"success": bool(success)})
+        except Exception as error:
+            return self._error_response(error)
 
     async def handle_move_by(self, request: Request) -> Response:
         try:
             data = await request.json()
-            delta = self._validate_delta(data)
-            if delta is None:
-                return web.json_response({"success": False, "error": "Invalid delta values"}, status=400)
-
-            dx, dy = delta
-
-            if self._pet.api.get_mode() != "motion":
-                self._pet.api.set_mode("motion")
-
-            success = self._pet.api.move_by(dx, dy)
-            return web.json_response({"success": success})
-        except Exception as e:
-            return web.json_response({"success": False, "error": str(e)}, status=400)
+            if not isinstance(data, dict):
+                raise InstanceConfigError("JSON body must be an object")
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON body"}, status=400)
+        delta = self._validate_delta(data)
+        if delta is None:
+            return web.json_response({"success": False, "error": "Invalid delta"}, status=400)
+        dx, dy = delta
+        try:
+            def move(pet):
+                if pet.api.get_mode() != "motion":
+                    pet.api.set_mode("motion")
+                return pet.api.move_by(dx, dy)
+            success = await self._run_pet_operation(request, move)
+            return web.json_response({"success": bool(success)})
+        except Exception as error:
+            return self._error_response(error)
 
     async def handle_move_edge(self, request: Request) -> Response:
         try:
             data = await request.json()
-            edge = data.get("edge")
-
-            if edge not in ("left", "right"):
-                return web.json_response({"success": False, "error": "Invalid edge"}, status=400)
-
-            screen = self._parse_screen_index(data)
-            if screen == -1:
-                return web.json_response({"success": False, "error": "screen index out of range"}, status=400)
-
-            if self._pet.api.get_mode() != "motion":
-                self._pet.api.set_mode("motion")
-
-            success = self._pet.api.move_to_edge(edge, screen)
-            return web.json_response({"success": success})
-        except Exception as e:
-            return web.json_response({"success": False, "error": str(e)}, status=400)
+            if not isinstance(data, dict):
+                raise InstanceConfigError("JSON body must be an object")
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON body"}, status=400)
+        edge = data.get("edge")
+        if edge not in ("left", "right"):
+            return web.json_response({"success": False, "error": "Invalid edge"}, status=400)
+        try:
+            def move(pet):
+                screen = self._parse_screen_index(data, pet)
+                if screen == -1:
+                    raise InstanceConfigError("screen index out of range")
+                if pet.api.get_mode() != "motion":
+                    pet.api.set_mode("motion")
+                return pet.api.move_to_edge(edge, screen)
+            success = await self._run_pet_operation(request, move)
+            return web.json_response({"success": bool(success)})
+        except Exception as error:
+            return self._error_response(error)
 
     async def handle_animation(self, request: Request) -> Response:
         try:
             data = await request.json()
-            name = data.get("name")
-            callback_url = data.get("callback_url")
-
-            if not name:
-                return web.json_response({"success": False, "error": "Animation name required"}, status=400)
-
-            if self._pet.api.get_mode() != "motion":
-                self._pet.api.set_mode("motion")
-
-            success = self._pet.api.play_animation(name)
-
-            if success and callback_url:
-                if not self._is_safe_callback_url(callback_url):
-                    logger.warning(f"Unsafe callback URL rejected: {callback_url}")
-                else:
-                    asyncio.create_task(self._send_animation_callback(name, callback_url))
-
-            return web.json_response({"success": success, "animation": name})
-        except Exception as e:
-            return web.json_response({"success": False, "error": str(e)}, status=400)
+            if not isinstance(data, dict):
+                raise InstanceConfigError("JSON body must be an object")
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON body"}, status=400)
+        name = data.get("name")
+        if not isinstance(name, str) or not name:
+            return web.json_response({"success": False, "error": "Animation name required"}, status=400)
+        callback_url = data.get("callback_url")
+        try:
+            def play(pet):
+                if pet.api.get_mode() != "motion":
+                    pet.api.set_mode("motion")
+                success = pet.api.play_animation(name)
+                return success, pet.api.get_position()
+            success, position = await self._run_pet_operation(request, play)
+        except Exception as error:
+            return self._error_response(error)
+        if success and callback_url and self._is_safe_callback_url(callback_url):
+            asyncio.create_task(self._send_animation_callback(name, callback_url, position))
+        elif callback_url and not self._is_safe_callback_url(callback_url):
+            logger.warning("Unsafe callback URL rejected: %s", callback_url)
+        return web.json_response({"success": bool(success), "animation": name})
 
     async def handle_walk(self, request: Request) -> Response:
         try:
             data = await request.json()
-            direction = data.get("direction")
-
-            if direction not in ("left", "right"):
-                return web.json_response({"success": False, "error": "Invalid direction"}, status=400)
-
-            screen = self._parse_screen_index(data)
-            if screen == -1:
-                return web.json_response({"success": False, "error": "screen index out of range"}, status=400)
-
-            if self._pet.api.get_mode() != "motion":
-                self._pet.api.set_mode("motion")
-
-            success = self._pet.api.play_walk(direction, screen)
-            return web.json_response({"success": success})
-        except Exception as e:
-            return web.json_response({"success": False, "error": str(e)}, status=400)
+            if not isinstance(data, dict):
+                raise InstanceConfigError("JSON body must be an object")
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON body"}, status=400)
+        direction = data.get("direction")
+        if direction not in ("left", "right"):
+            return web.json_response({"success": False, "error": "Invalid direction"}, status=400)
+        try:
+            def walk(pet):
+                screen = self._parse_screen_index(data, pet)
+                if screen == -1:
+                    raise InstanceConfigError("screen index out of range")
+                if pet.api.get_mode() != "motion":
+                    pet.api.set_mode("motion")
+                return pet.api.play_walk(direction, screen)
+            success = await self._run_pet_operation(request, walk)
+            return web.json_response({"success": bool(success)})
+        except Exception as error:
+            return self._error_response(error)
 
     async def handle_animations_list(self, request: Request) -> Response:
-        animations = self._pet.api.get_available_animations()
-        return web.json_response({"animations": animations})
+        try:
+            animations = await self._run_pet_operation(
+                request, lambda pet: pet.api.get_available_animations()
+            )
+            return web.json_response({"animations": animations})
+        except Exception as error:
+            return self._error_response(error)
 
-    async def _send_animation_callback(self, animation_name: str, callback_url: str) -> None:
-        if not callback_url:
-            return
-
+    async def _send_animation_callback(self, animation_name: str, callback_url: str, position: dict) -> None:
         payload = {
             "event": "animation_completed",
             "animation": animation_name,
-            "position": self._pet.api.get_position(),
-            "timestamp": datetime.now().isoformat() + "Z"
+            "position": position,
+            "timestamp": datetime.now().isoformat() + "Z",
         }
-
         try:
             timeout = aiohttp.ClientTimeout(total=5)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(callback_url, json=payload) as response:
-                    if response.status == 200:
-                        logger.info(f"Animation callback success: {animation_name} -> {callback_url}")
-                    else:
-                        logger.warning(f"Animation callback failed with status: {response.status}")
-        except asyncio.TimeoutError:
-            logger.warning(f"Animation callback timeout: {animation_name} -> {callback_url}")
-        except Exception as e:
-            logger.error(f"Animation callback failed: {animation_name} -> {callback_url}, error: {e}")
+                    if response.status != 200:
+                        logger.warning("Animation callback failed with status: %s", response.status)
+        except Exception as error:
+            logger.error("Animation callback failed: %s -> %s, error: %s", animation_name, callback_url, error)
+
+    async def handle_list_instances(self, request: Request) -> Response:
+        def collect():
+            instances = []
+            for config in self._platform.list_instances():
+                widget = self._platform.get_pet_widget(config.pet_id)
+                position = widget.api.get_position() if widget is not None else config.position
+                state = widget.api.get_state() if widget is not None else "unknown"
+                instances.append({
+                    "pet_id": config.pet_id,
+                    "package": config.package,
+                    "primary": config.primary,
+                    "position": position,
+                    "state": state,
+                    "size": config.size,
+                    "screen_index": config.screen_index,
+                })
+            return instances
+        try:
+            return web.json_response({"instances": await self._run_in_main_thread(collect)})
+        except Exception as error:
+            return self._error_response(error)
+
+    async def handle_create_instance(self, request: Request) -> Response:
+        try:
+            data = await request.json()
+            if not isinstance(data, dict):
+                raise InstanceConfigError("JSON body must be an object")
+        except Exception:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        if not isinstance(data, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+        try:
+            def create():
+                package = data.get("package", "default")
+                position = data.get("position")
+                pet_id = self._platform.create_instance(package, position, config=data)
+                config = self._platform.get_instance_config(pet_id)
+                return config.to_dict() if config else {"pet_id": pet_id}
+            result = await self._run_in_main_thread(create)
+            return web.json_response(result, status=201)
+        except Exception as error:
+            return self._error_response(error)
+
+    async def handle_get_instance(self, request: Request) -> Response:
+        pet_id = request.match_info.get("pet_id")
+        try:
+            def collect():
+                config = self._platform.get_instance_config(pet_id)
+                if config is None:
+                    raise InstanceNotFoundError(f"pet not found: {pet_id}")
+                widget = self._platform.get_pet_widget(pet_id)
+                result = config.to_dict()
+                result["state"] = widget.api.get_state() if widget else "unknown"
+                result["mode"] = widget.api.get_mode() if widget else "unknown"
+                result["position"] = widget.api.get_position() if widget else config.position
+                return result
+            return web.json_response(await self._run_in_main_thread(collect))
+        except Exception as error:
+            return self._error_response(error)
+
+    async def handle_update_instance(self, request: Request) -> Response:
+        pet_id = request.match_info.get("pet_id")
+        try:
+            data = await request.json()
+            if not isinstance(data, dict):
+                raise InstanceConfigError("JSON body must be an object")
+        except Exception:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        if not isinstance(data, dict):
+            return web.json_response({"error": "JSON body must be an object"}, status=400)
+        try:
+            updated = await self._run_in_main_thread(
+                lambda: self._platform.update_instance_config(pet_id, data)
+            )
+            return web.json_response(updated.to_dict())
+        except Exception as error:
+            return self._error_response(error)
+
+    async def handle_delete_instance(self, request: Request) -> Response:
+        pet_id = request.match_info.get("pet_id")
+        try:
+            success = await self._run_in_main_thread(
+                lambda: self._platform.destroy_instance(pet_id)
+            )
+            if not success:
+                raise InstanceNotFoundError(f"pet not found: {pet_id}")
+            return web.json_response({"success": True})
+        except Exception as error:
+            return self._error_response(error)
 
     # ========== AI Tool-Calling ==========
+
+    def _get_primary_pet(self):
+        return self._resolve_pet_sync()
 
     def _build_tools(self) -> list[dict]:
         """构建 AI 可调用的工具定义列表（OpenAI function calling 格式）。
 
         包含固定的控制类工具和动态的宠物动画动作工具。
+        多宠物模式下，所有控制类工具均新增可选参数 ``pet_id`` 用于指定目标实例。
         """
+        # pet_id 通用参数定义（多宠物模式下用于路由到指定桌宠实例）
+        pet_id_param = {
+            "type": "string",
+            "description": "目标桌宠实例 ID，不指定则作用于主实例",
+        }
+
         tools = [
             {
                 "type": "function",
@@ -472,7 +862,9 @@ class ApiServer:
                     "description": "获取桌面宠物的当前状态，包括位置、状态、模式和可用动画列表",
                     "parameters": {
                         "type": "object",
-                        "properties": {},
+                        "properties": {
+                            "pet_id": pet_id_param,
+                        },
                         "required": [],
                     },
                 },
@@ -490,6 +882,7 @@ class ApiServer:
                                 "enum": ["random", "motion"],
                                 "description": "运行模式：random=自主随机行动，motion=API受控模式",
                             },
+                            "pet_id": pet_id_param,
                         },
                         "required": ["mode"],
                     },
@@ -515,6 +908,7 @@ class ApiServer:
                                 "type": "integer",
                                 "description": "目标屏幕索引（可选，不填则按坐标自动选择屏幕）",
                             },
+                            "pet_id": pet_id_param,
                         },
                         "required": ["x", "y"],
                     },
@@ -536,6 +930,7 @@ class ApiServer:
                                 "type": "integer",
                                 "description": "Y 方向偏移量（像素，正数向下，负数向上）",
                             },
+                            "pet_id": pet_id_param,
                         },
                         "required": ["dx", "dy"],
                     },
@@ -558,6 +953,7 @@ class ApiServer:
                                 "type": "integer",
                                 "description": "目标屏幕索引（可选，不填则使用当前屏幕）",
                             },
+                            "pet_id": pet_id_param,
                         },
                         "required": ["edge"],
                     },
@@ -580,6 +976,7 @@ class ApiServer:
                                 "type": "integer",
                                 "description": "目标屏幕索引（可选，不填则使用当前屏幕）",
                             },
+                            "pet_id": pet_id_param,
                         },
                         "required": ["direction"],
                     },
@@ -592,15 +989,74 @@ class ApiServer:
                     "description": "获取所有显示器屏幕信息，包括分辨率和位置",
                     "parameters": {
                         "type": "object",
-                        "properties": {},
+                        "properties": {
+                            "pet_id": pet_id_param,
+                        },
                         "required": [],
                     },
                 },
             },
         ]
 
-        # 动态添加宠物动画动作工具
-        animations = self._pet.api.get_available_animations()
+        # 多宠物模式独有工具：实例管理
+        tools.append({
+        "type": "function",
+        "function": {
+            "name": "list_pets",
+            "description": "列出当前所有运行中的桌宠实例（含 pet_id、包名、位置、状态）",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+        })
+        tools.append({
+        "type": "function",
+        "function": {
+            "name": "create_pet",
+            "description": "创建一个新的桌宠实例并显示在屏幕上",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "package": {
+                        "type": "string",
+                        "description": "宠物资源包名（如 'default'）；不指定时使用默认包",
+                    },
+                    "x": {
+                        "type": "integer",
+                        "description": "初始 X 坐标（像素）",
+                    },
+                    "y": {
+                        "type": "integer",
+                        "description": "初始 Y 坐标（像素）",
+                    },
+                },
+                "required": [],
+            },
+        },
+        })
+        tools.append({
+        "type": "function",
+        "function": {
+            "name": "remove_pet",
+            "description": "销毁指定的桌宠实例",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pet_id": {
+                        "type": "string",
+                        "description": "要销毁的桌宠实例 ID",
+                    },
+                },
+                "required": ["pet_id"],
+            },
+        },
+        })
+
+        # 动态添加宠物动画动作工具（基于主实例的动画列表）
+        primary_pet = self._get_primary_pet()
+        animations = primary_pet.api.get_available_animations() if primary_pet is not None else []
         if animations:
             tools.append({
                 "type": "function",
@@ -615,6 +1071,7 @@ class ApiServer:
                                 "enum": animations,
                                 "description": f"要播放的动画名称，可选值：{', '.join(animations)}",
                             },
+                            "pet_id": pet_id_param,
                         },
                         "required": ["name"],
                     },
@@ -633,6 +1090,7 @@ class ApiServer:
                                 "type": "string",
                                 "description": "要播放的动画名称",
                             },
+                            "pet_id": pet_id_param,
                         },
                         "required": ["name"],
                     },
@@ -656,6 +1114,7 @@ class ApiServer:
                             "type": "integer",
                             "description": "消息显示时长（毫秒），默认 5000（5秒）",
                         },
+                        "pet_id": pet_id_param,
                     },
                     "required": ["text"],
                 },
@@ -685,6 +1144,7 @@ class ApiServer:
                             "type": "string",
                             "description": "初始显示的消息文本",
                         },
+                        "pet_id": pet_id_param,
                     },
                     "required": [],
                 },
@@ -697,7 +1157,9 @@ class ApiServer:
                 "description": "隐藏可交互的聊天气泡",
                 "parameters": {
                     "type": "object",
-                    "properties": {},
+                    "properties": {
+                        "pet_id": pet_id_param,
+                    },
                     "required": [],
                 },
             },
@@ -707,20 +1169,15 @@ class ApiServer:
 
     async def handle_tools_list(self, request: Request) -> Response:
         """GET /api/tools - 返回 AI 可调用的工具定义列表"""
-        tools = self._build_tools()
+        tools = await self._run_in_main_thread(self._build_tools)
         return web.json_response({"tools": tools})
 
     async def handle_tools_call(self, request: Request) -> Response:
-        """POST /api/tools/call - 执行 AI 工具调用
-
-        请求体格式：
-        {
-            "name": "工具名称",
-            "arguments": { ... }  // 可选
-        }
-        """
+        """POST /api/tools/call - execute an AI tool call."""
         try:
             data = await request.json()
+            if not isinstance(data, dict):
+                raise InstanceConfigError("JSON body must be an object")
         except Exception:
             return web.json_response(
                 {"success": False, "error": "Invalid JSON body"},
@@ -729,10 +1186,14 @@ class ApiServer:
 
         tool_name = data.get("name")
         arguments = data.get("arguments", {})
-
-        if not tool_name:
+        if not isinstance(tool_name, str) or not tool_name:
             return web.json_response(
                 {"success": False, "error": "Tool name is required"},
+                status=400,
+            )
+        if not isinstance(arguments, dict):
+            return web.json_response(
+                {"success": False, "error": "Tool arguments must be an object"},
                 status=400,
             )
 
@@ -745,18 +1206,21 @@ class ApiServer:
 
         try:
             result = await handler(arguments)
-            return web.json_response(result)
-        except Exception as e:
-            logger.error(f"Tool call error: {tool_name} -> {e}")
+        except Exception as error:
+            logger.error("Tool call error: %s -> %s", tool_name, error)
             return web.json_response(
-                {"success": False, "error": str(e)},
-                status=500,
+                self._tool_error(error),
+                status=self._status_for_error(error),
             )
+        if not isinstance(result, dict):
+            error = RuntimeError(f"Tool handler returned invalid result: {tool_name}")
+            return web.json_response(self._tool_error(error), status=500)
+        return web.json_response(result, status=self._tool_result_status(result))
 
     @property
     def _tool_handlers(self) -> dict:
         """工具名到处理函数的映射"""
-        return {
+        handlers = {
             "get_pet_status": self._tool_get_pet_status,
             "set_pet_mode": self._tool_set_pet_mode,
             "move_pet_to": self._tool_move_pet_to,
@@ -770,150 +1234,177 @@ class ApiServer:
             "show_chat_bubble": self._tool_show_chat_bubble,
             "hide_chat_bubble": self._tool_hide_chat_bubble,
         }
+        # 多宠物模式独有工具
+        handlers["list_pets"] = self._tool_list_pets
+        handlers["create_pet"] = self._tool_create_pet
+        handlers["remove_pet"] = self._tool_remove_pet
+        return handlers
+
+    async def _run_tool_pet(self, args: dict, operation):
+        pet_id = args.get("pet_id")
+
+        def invoke():
+            pet = self._resolve_pet_sync(pet_id)
+            if pet is None:
+                raise InstanceNotFoundError(f"pet not found: {pet_id or 'primary'}")
+            return operation(pet)
+
+        return await self._run_in_main_thread(invoke)
+
+    @staticmethod
+    def _tool_error(error: BaseException) -> dict:
+        return {"success": False, "error": str(error), "error_type": type(error).__name__}
+
+    @staticmethod
+    def _tool_result_status(result: dict) -> int:
+        if result.get("success") is not False:
+            return 200
+        error_type = result.get("error_type")
+        if error_type in {"InstanceNotFoundError", "PackageNotFoundError"}:
+            return 404
+        if error_type == "InstanceConflictError":
+            return 409
+        if error_type in {
+            "InstanceConfigError",
+            "ValueError",
+            "TypeError",
+            "JSONDecodeError",
+        }:
+            return 400
+        return 500
 
     async def _tool_get_pet_status(self, args: dict) -> dict:
-        position = self._pet.api.get_position()
-        state = self._pet.api.get_state()
-        mode = self._pet.api.get_mode()
-        animations = self._pet.api.get_available_animations()
-
-        screens = []
-        current_screen = position.get("screen", -1)
-        sm = getattr(self._pet, "screen_manager", None)
-        if sm is not None:
-            try:
-                screens = [s.to_dict() for s in sm.all_screens()]
-            except Exception:
-                screens = []
-
-        return {
-            "success": True,
-            "data": {
-                "position": position,
-                "state": state,
-                "mode": mode,
-                "animations": animations,
-                "current_screen": current_screen,
-                "screens": screens,
-            },
-        }
+        try:
+            def collect(pet):
+                return {
+                    "position": pet.api.get_position(),
+                    "state": pet.api.get_state(),
+                    "mode": pet.api.get_mode(),
+                    "animations": pet.api.get_available_animations(),
+                }
+            return {"success": True, "data": await self._run_tool_pet(args, collect)}
+        except Exception as error:
+            return self._tool_error(error)
 
     async def _tool_set_pet_mode(self, args: dict) -> dict:
         mode = args.get("mode")
         if mode not in ("random", "motion"):
-            return {"success": False, "error": "Invalid mode, must be 'random' or 'motion'"}
-
-        success = self._pet.api.set_mode(mode)
-        return {"success": success, "data": {"mode": mode}}
+            return self._tool_error(InstanceConfigError("Invalid mode"))
+        try:
+            success = await self._run_tool_pet(args, lambda pet: pet.api.set_mode(mode))
+            return {"success": bool(success), "data": {"mode": mode}}
+        except Exception as error:
+            return self._tool_error(error)
 
     async def _tool_move_pet_to(self, args: dict) -> dict:
         coords = self._validate_coordinates(args)
         if coords is None:
-            return {"success": False, "error": "Invalid coordinates"}
-
+            return self._tool_error(InstanceConfigError("Invalid coordinates"))
         x, y = coords
-        screen = self._parse_screen_index(args)
-        if screen == -1:
-            return {"success": False, "error": "Screen index out of range"}
-
-        if self._pet.api.get_mode() != "motion":
-            self._pet.api.set_mode("motion")
-
-        success = self._pet.api.move_to(x, y, screen)
-        return {"success": success, "data": {"x": x, "y": y, "screen": screen}}
+        try:
+            def move(pet):
+                screen = self._parse_screen_index(args, pet)
+                if screen == -1:
+                    raise InstanceConfigError("screen index out of range")
+                if pet.api.get_mode() != "motion":
+                    pet.api.set_mode("motion")
+                return pet.api.move_to(x, y, screen)
+            success = await self._run_tool_pet(args, move)
+            return {"success": bool(success), "data": {"x": x, "y": y}}
+        except Exception as error:
+            return self._tool_error(error)
 
     async def _tool_move_pet_by(self, args: dict) -> dict:
         delta = self._validate_delta(args)
         if delta is None:
-            return {"success": False, "error": "Invalid delta values"}
-
+            return self._tool_error(InstanceConfigError("Invalid delta"))
         dx, dy = delta
-        if self._pet.api.get_mode() != "motion":
-            self._pet.api.set_mode("motion")
-
-        success = self._pet.api.move_by(dx, dy)
-        return {"success": success, "data": {"dx": dx, "dy": dy}}
+        try:
+            def move(pet):
+                if pet.api.get_mode() != "motion":
+                    pet.api.set_mode("motion")
+                return pet.api.move_by(dx, dy)
+            success = await self._run_tool_pet(args, move)
+            return {"success": bool(success), "data": {"dx": dx, "dy": dy}}
+        except Exception as error:
+            return self._tool_error(error)
 
     async def _tool_move_pet_to_edge(self, args: dict) -> dict:
         edge = args.get("edge")
         if edge not in ("left", "right"):
-            return {"success": False, "error": "Invalid edge, must be 'left' or 'right'"}
-
-        screen = self._parse_screen_index(args)
-        if screen == -1:
-            return {"success": False, "error": "Screen index out of range"}
-
-        if self._pet.api.get_mode() != "motion":
-            self._pet.api.set_mode("motion")
-
-        success = self._pet.api.move_to_edge(edge, screen)
-        return {"success": success, "data": {"edge": edge, "screen": screen}}
+            return self._tool_error(InstanceConfigError("Invalid edge"))
+        try:
+            def move(pet):
+                screen = self._parse_screen_index(args, pet)
+                if screen == -1:
+                    raise InstanceConfigError("screen index out of range")
+                if pet.api.get_mode() != "motion":
+                    pet.api.set_mode("motion")
+                return pet.api.move_to_edge(edge, screen)
+            success = await self._run_tool_pet(args, move)
+            return {"success": bool(success), "data": {"edge": edge}}
+        except Exception as error:
+            return self._tool_error(error)
 
     async def _tool_walk_pet(self, args: dict) -> dict:
         direction = args.get("direction")
         if direction not in ("left", "right"):
-            return {"success": False, "error": "Invalid direction, must be 'left' or 'right'"}
-
-        screen = self._parse_screen_index(args)
-        if screen == -1:
-            return {"success": False, "error": "Screen index out of range"}
-
-        if self._pet.api.get_mode() != "motion":
-            self._pet.api.set_mode("motion")
-
-        success = self._pet.api.play_walk(direction, screen)
-        return {"success": success, "data": {"direction": direction, "screen": screen}}
+            return self._tool_error(InstanceConfigError("Invalid direction"))
+        try:
+            def walk(pet):
+                screen = self._parse_screen_index(args, pet)
+                if screen == -1:
+                    raise InstanceConfigError("screen index out of range")
+                if pet.api.get_mode() != "motion":
+                    pet.api.set_mode("motion")
+                return pet.api.play_walk(direction, screen)
+            success = await self._run_tool_pet(args, walk)
+            return {"success": bool(success), "data": {"direction": direction}}
+        except Exception as error:
+            return self._tool_error(error)
 
     async def _tool_play_animation(self, args: dict) -> dict:
         name = args.get("name")
-        if not name:
-            return {"success": False, "error": "Animation name is required"}
-
-        if self._pet.api.get_mode() != "motion":
-            self._pet.api.set_mode("motion")
-
-        success = self._pet.api.play_animation(name)
-        if success:
-            return {"success": True, "data": {"animation": name}}
-        else:
-            available = self._pet.api.get_available_animations()
-            return {
-                "success": False,
-                "error": f"Animation '{name}' not found or not available",
-                "data": {"available_animations": available},
-            }
+        if not isinstance(name, str) or not name:
+            return self._tool_error(InstanceConfigError("Animation name required"))
+        try:
+            def play(pet):
+                if pet.api.get_mode() != "motion":
+                    pet.api.set_mode("motion")
+                return pet.api.play_animation(name)
+            success = await self._run_tool_pet(args, play)
+            return {"success": bool(success), "data": {"animation": name}}
+        except Exception as error:
+            return self._tool_error(error)
 
     async def _tool_get_screens(self, args: dict) -> dict:
-        sm = getattr(self._pet, "screen_manager", None)
-        if sm is None:
-            return {"success": True, "data": {"screens": [], "current_screen": -1}}
-
         try:
-            screens = [s.to_dict() for s in sm.all_screens()]
-        except Exception:
-            screens = []
-
-        pos = self._pet.api.get_position()
-        return {
-            "success": True,
-            "data": {
-                "screens": screens,
-                "current_screen": pos.get("screen", -1),
-            },
-        }
+            def collect(pet):
+                sm = getattr(pet, "screen_manager", None)
+                position = pet.api.get_position()
+                return {
+                    "screens": [screen.to_dict() for screen in sm.all_screens()] if sm else [],
+                    "current_screen": position.get("screen", -1),
+                }
+            return {"success": True, "data": await self._run_tool_pet(args, collect)}
+        except Exception as error:
+            return self._tool_error(error)
 
     async def _tool_show_message(self, args: dict) -> dict:
-        text = args.get("text", "").strip()
-        if not text:
-            return {"success": False, "error": "text is required"}
-        duration = args.get("duration", 5000)
+        text = args.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return self._tool_error(InstanceConfigError("text is required"))
         try:
-            duration = int(duration)
-        except (ValueError, TypeError):
-            duration = 5000
-        from PyQt6.QtCore import QTimer
-        self._pet.show_custom_bubble_requested.emit(text, duration)
-        return {"success": True, "data": {"text": text, "duration": duration}}
+            duration = int(args.get("duration", 5000))
+        except (TypeError, ValueError):
+            return self._tool_error(InstanceConfigError("duration must be an integer"))
+        try:
+            await self._run_tool_pet(
+                args, lambda pet: pet.show_custom_bubble_requested.emit(text.strip(), duration)
+            )
+            return {"success": True, "data": {"text": text.strip(), "duration": duration}}
+        except Exception as error:
+            return self._tool_error(error)
 
     async def _tool_get_user_messages(self, args: dict) -> dict:
         messages = list(self._user_messages)
@@ -922,25 +1413,84 @@ class ApiServer:
 
     async def _tool_show_chat_bubble(self, args: dict) -> dict:
         message = args.get("message", "")
-        # 修复：QTimer.singleShot 在子线程的 asyncio loop 里不触发。
-        # 改用 Qt signal 跨线程投递（QueuedConnection 自动路由到主线程）
-        self._pet.show_chat_bubble_requested.emit(message)
-        return {"success": True}
+        try:
+            await self._run_tool_pet(
+                args, lambda pet: pet.show_chat_bubble_requested.emit(str(message))
+            )
+            return {"success": True}
+        except Exception as error:
+            return self._tool_error(error)
 
     async def _tool_hide_chat_bubble(self, args: dict) -> dict:
-        # 修复：QTimer.singleShot 在子线程的 asyncio loop 里不触发。
-        # 改用 Qt signal 跨线程投递（QueuedConnection 自动路由到主线程）
-        self._pet.hide_chat_bubble_requested.emit()
-        return {"success": True}
+        try:
+            await self._run_tool_pet(args, lambda pet: pet.hide_chat_bubble_requested.emit())
+            return {"success": True}
+        except Exception as error:
+            return self._tool_error(error)
+
+    async def _tool_list_pets(self, args: dict) -> dict:
+        try:
+            def collect():
+                instances = []
+                for config in self._platform.list_instances():
+                    widget = self._platform.get_pet_widget(config.pet_id)
+                    instances.append({
+                        "pet_id": config.pet_id,
+                        "package": config.package,
+                        "primary": config.primary,
+                        "position": widget.api.get_position() if widget else config.position,
+                        "state": widget.api.get_state() if widget else "unknown",
+                        "size": config.size,
+                    })
+                return instances
+            return {"success": True, "data": {"instances": await self._run_in_main_thread(collect)}}
+        except Exception as error:
+            return self._tool_error(error)
+
+    async def _tool_create_pet(self, args: dict) -> dict:
+        package = args.get("package", "default")
+        x, y = args.get("x"), args.get("y")
+        if (x is None) != (y is None):
+            return self._tool_error(InstanceConfigError("x and y must be provided together"))
+        if x is None:
+            position = None
+        else:
+            coords = self._validate_coordinates({"x": x, "y": y})
+            if coords is None:
+                return self._tool_error(InstanceConfigError("Invalid coordinates"))
+            position = {"x": coords[0], "y": coords[1]}
+        try:
+            def create():
+                pet_id = self._platform.create_instance(package, position)
+                config = self._platform.get_instance_config(pet_id)
+                return config.to_dict() if config else {"pet_id": pet_id}
+            return {"success": True, "data": await self._run_in_main_thread(create)}
+        except Exception as error:
+            return self._tool_error(error)
+
+    async def _tool_remove_pet(self, args: dict) -> dict:
+        pet_id = args.get("pet_id")
+        if not pet_id:
+            return self._tool_error(InstanceConfigError("pet_id is required"))
+        try:
+            success = await self._run_in_main_thread(
+                lambda: self._platform.destroy_instance(pet_id)
+            )
+            if not success:
+                raise InstanceNotFoundError(f"pet not found: {pet_id}")
+            return {"success": True, "data": {"pet_id": pet_id}}
+        except Exception as error:
+            return self._tool_error(error)
 
     # ========== LLM Chat with Function Calling ==========
 
     def _get_llm_config(self) -> dict:
-        """从 ConfigManager 获取 LLM 配置"""
-        cm = getattr(self._pet, "config_manager", None)
+        cm = getattr(self._platform, "global_config", None)
         if cm is None:
             return {}
-        llm = cm.llm
+        llm = getattr(cm, "llm", None)
+        if llm is None:
+            return {}
         return {
             "enabled": llm.enabled,
             "api_key": llm.api_key,
@@ -972,18 +1522,22 @@ class ApiServer:
         """
         try:
             data = await request.json()
+            if not isinstance(data, dict):
+                raise InstanceConfigError("JSON body must be an object")
         except Exception:
             return web.json_response(
                 {"success": False, "error": "Invalid JSON body"},
                 status=400,
             )
 
-        message = data.get("message", "").strip()
-        if not message:
+        message = data.get("message")
+        if not isinstance(message, str) or not message.strip():
             return web.json_response(
                 {"success": False, "error": "message is required"},
                 status=400,
             )
+
+        message = message.strip()
 
         # 获取 LLM 配置（请求参数可覆盖）
         llm_config = self._get_llm_config()
@@ -1019,7 +1573,7 @@ class ApiServer:
         messages.append({"role": "user", "content": message})
 
         # 构建工具定义
-        tools = self._build_tools()
+        tools = await self._run_in_main_thread(self._build_tools)
 
         # Function calling 循环
         tool_results = []
@@ -1154,28 +1708,35 @@ class ApiServer:
     # ========== 消息交互端点 ==========
 
     async def _forward_to_openclaw(self, text: str, timestamp: str) -> None:
-        """将用户消息直接 POST 到 OpenClaw pet-bubble channel webhook
+        """将用户消息 POST 到 OpenClaw openclaw-http-channel 插件的入站 webhook
 
+        采用 openclaw-http-channel 入站协议：body 为 {from, text, chatType}。
         使用 httpx 异步发送，失败不影响桌宠主流程。
+
+        注意：openclaw-http-channel 的 inbound handler 会立即返回 202（accepted），
+        然后异步处理 agent turn。Agent 回复通过独立的出站 webhook 推送回来，
+        不在此请求的响应中返回。超时设为 10 秒足够。
         """
         body = {
+            "from": self._openclaw_peer,
             "text": text,
-            "peer": self._openclaw_peer,
-            "timestamp": timestamp,
-            "metadata": {"source": "pet-bubble"},
+            "chatType": "direct",
         }
         try:
             import httpx
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.post(self._openclaw_webhook_url, json=body)
-                if resp.status_code == 200:
-                    logger.info(f"[OpenClaw] Message forwarded: {text[:50]}")
+                if 200 <= resp.status_code < 300:
+                    dispatched = resp.json().get("dispatched", True)
+                    logger.info(
+                        f"[OpenClaw] Message forwarded (dispatched={dispatched}): {text[:50]}"
+                    )
                 else:
                     logger.warning(
                         f"[OpenClaw] Webhook returned {resp.status_code}: {resp.text[:200]}"
                     )
         except Exception as e:
-            logger.warning(f"[OpenClaw] Failed to forward message: {e}")
+            logger.warning(f"[OpenClaw] Failed to forward message: {type(e).__name__}: {e!r}")
 
     def add_user_message(self, text: str) -> None:
         """将用户消息添加到队列并转发到 OpenClaw
@@ -1190,92 +1751,159 @@ class ApiServer:
         }
         self._user_messages.append(msg)
         # 异步转发到 OpenClaw webhook（不阻塞 UI 线程）
+        # 注意：add_user_message 在 Qt 主线程被调用（ChatBubble 信号槽），而
+        # _openclaw_loop 是 API 子线程的事件循环。必须用 run_coroutine_threadsafe
+        # 才能安全跨线程调度——ensure_future 用的 call_soon 非线程安全，
+        # 不会唤醒目标 loop，导致协程被延迟到 loop 下次自然活动时才执行。
         if self._openclaw_loop and self._openclaw_loop.is_running():
-            asyncio.ensure_future(
+            asyncio.run_coroutine_threadsafe(
                 self._forward_to_openclaw(text, msg["timestamp"]),
                 loop=self._openclaw_loop,
             )
         else:
-            logger.debug("[OpenClaw] Event loop not ready, message queued only")
+            logger.warning(f"[OpenClaw] Event loop not ready, message queued only. loop={self._openclaw_loop}")
 
     async def handle_show_message(self, request: Request) -> Response:
-        """POST /api/message - 在宠物旁显示气泡消息
-
-        请求体：{"text": "消息内容", "duration": 5000}
-        """
         try:
             data = await request.json()
+            if not isinstance(data, dict):
+                raise InstanceConfigError("JSON body must be an object")
         except Exception:
-            return web.json_response(
-                {"success": False, "error": "Invalid JSON body"}, status=400
-            )
-
-        text = data.get("text", "").strip()
-        if not text:
-            return web.json_response(
-                {"success": False, "error": "text is required"}, status=400
-            )
-
-        duration = data.get("duration", 5000)
+            return web.json_response({"success": False, "error": "Invalid JSON body"}, status=400)
+        text = data.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return web.json_response({"success": False, "error": "text is required"}, status=400)
         try:
-            duration = int(duration)
-        except (ValueError, TypeError):
-            duration = 5000
+            duration = int(data.get("duration", 5000))
+        except (TypeError, ValueError):
+            return web.json_response({"success": False, "error": "duration must be an integer"}, status=400)
+        try:
+            await self._run_pet_operation(
+                request, lambda pet: pet.show_custom_bubble_requested.emit(text.strip(), duration)
+            )
+            return web.json_response({"success": True, "text": text.strip(), "duration": duration})
+        except Exception as error:
+            return self._error_response(error)
 
-        # 通过 QTimer 在主线程中显示气泡
-        from PyQt6.QtCore import QTimer
-        self._pet.show_custom_bubble_requested.emit(text, duration)
-
-        return web.json_response({"success": True, "text": text, "duration": duration})
+    async def handle_hide_message(self, request: Request) -> Response:
+        try:
+            await self._run_pet_operation(
+                request, lambda pet: pet.hide_custom_bubble_requested.emit()
+            )
+            return web.json_response({"success": True})
+        except Exception as error:
+            return self._error_response(error)
 
     async def handle_pending_messages(self, request: Request) -> Response:
-        """GET /api/messages/pending - 获取并清空用户消息队列"""
         messages = list(self._user_messages)
         self._user_messages.clear()
         return web.json_response({"messages": messages})
 
     async def handle_send_message(self, request: Request) -> Response:
-        """POST /api/messages/send - 将消息添加到用户消息队列
-
-        请求体：{"text": "用户消息"}
-        """
         try:
             data = await request.json()
+            if not isinstance(data, dict):
+                raise InstanceConfigError("JSON body must be an object")
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON body"}, status=400)
+        text = data.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return web.json_response({"success": False, "error": "text is required"}, status=400)
+        self.add_user_message(text.strip())
+        return web.json_response({"success": True, "text": text.strip()})
+
+    async def handle_show_chat_bubble(self, request: Request) -> Response:
+        try:
+            data = await request.json()
+            if not isinstance(data, dict):
+                raise InstanceConfigError("JSON body must be an object")
         except Exception:
             return web.json_response(
                 {"success": False, "error": "Invalid JSON body"}, status=400
             )
-
-        text = data.get("text", "").strip()
-        if not text:
+        message = data.get("message")
+        if not isinstance(message, str):
             return web.json_response(
-                {"success": False, "error": "text is required"}, status=400
+                {"success": False, "error": "message must be a string"}, status=400
             )
-
-        self.add_user_message(text)
-        return web.json_response({"success": True, "text": text})
-
-    async def handle_show_chat_bubble(self, request: Request) -> Response:
-        """POST /api/chat_bubble/show - 显示可交互的聊天气泡
-
-        请求体：{"message": "初始消息"}
-        """
         try:
-            data = await request.json()
-        except Exception:
-            data = {}
-
-        message = data.get("message", "")
-
-        # 修复：QTimer.singleShot 在子线程的 asyncio loop 里不触发。
-        # 改用 Qt signal 跨线程投递（QueuedConnection 自动路由到主线程）
-        self._pet.show_chat_bubble_requested.emit(message)
-
-        return web.json_response({"success": True})
+            await self._run_pet_operation(
+                request, lambda pet: pet.show_chat_bubble_requested.emit(message)
+            )
+            return web.json_response({"success": True})
+        except Exception as error:
+            return self._error_response(error)
 
     async def handle_hide_chat_bubble(self, request: Request) -> Response:
-        """POST /api/chat_bubble/hide - 隐藏聊天气泡"""
-        from PyQt6.QtCore import QTimer
-        self._pet.hide_chat_bubble_requested.emit()
+        try:
+            await self._run_pet_operation(
+                request, lambda pet: pet.hide_chat_bubble_requested.emit()
+            )
+            return web.json_response({"success": True})
+        except Exception as error:
+            return self._error_response(error)
 
-        return web.json_response({"success": True})
+    async def handle_openclaw_reply(self, request: Request) -> Response:
+        """POST /api/openclaw/reply - 接收 OpenClaw Agent 回复
+
+        作为 openclaw-http-channel 出站方向（B 层）的接收端：插件把 Agent 回复
+        POST 到本端点，body 格式为 {channel, accountId, to, text, timestamp}，
+        携带 ``X-HTTP-Channel-Secret`` header 做鉴权。
+
+        收到回复后通过 ``show_chat_bubble_requested`` 信号投递到主线程 ChatBubble 显示。
+        """
+        # 1. 方法校验
+        if request.method != "POST":
+            logger.warning(f"[OpenClaw Reply] Rejected: method={request.method} (POST only)")
+            return web.json_response(
+                {"error": "Method Not Allowed"}, status=405
+            )
+
+        # 记录请求到达（全链路诊断）
+        logger.info(
+            f"[OpenClaw Reply] Received request: content_type={request.headers.get('Content-Type', '?')}, "
+            f"has_secret_header={'X-HTTP-Channel-Secret' in request.headers}"
+        )
+
+        # 2. 鉴权：校验 X-HTTP-Channel-Secret header
+        if self._openclaw_secret_token:
+            secret = request.headers.get("X-HTTP-Channel-Secret", "")
+            if secret != self._openclaw_secret_token:
+                logger.warning("[OpenClaw Reply] Rejected: secret token mismatch")
+                return web.json_response(
+                    {"error": "Invalid secret token"}, status=401
+                )
+
+        # 3. 解析 body
+        try:
+            data = await request.json()
+            if not isinstance(data, dict):
+                raise InstanceConfigError("JSON body must be an object")
+        except Exception:
+            logger.warning("[OpenClaw Reply] Rejected: invalid JSON body")
+            return web.json_response(
+                {"error": "Invalid JSON body"}, status=400
+            )
+
+        text = data.get("text", "")
+        if not isinstance(text, str) or not text.strip():
+            logger.warning(f"[OpenClaw Reply] Rejected: text missing or empty, got {type(text).__name__}")
+            return web.json_response(
+                {
+                    "error": "Payload must be { to?: string, text: string, ... }"
+                },
+                status=400,
+            )
+        text = text.strip()
+
+        # OpenClaw peer targets the current primary pet.
+        try:
+            def show_reply():
+                pet = self._resolve_pet_sync()
+                if pet is None:
+                    raise InstanceNotFoundError("pet not found: primary")
+                pet.show_chat_bubble_requested.emit(text)
+            await self._run_in_main_thread(show_reply)
+        except Exception as error:
+            return self._error_response(error)
+        return web.json_response({"received": True})

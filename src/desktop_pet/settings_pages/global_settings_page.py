@@ -1,4 +1,9 @@
-"""Global settings page."""
+"""Global settings page.
+
+仅显示全局配置项：API、托盘、启动、显示、LLM、MCP。
+实例级配置（actions/rest_reminder/movement/behavior/motion_mode/click_detection）
+已迁移至实例配置页。
+"""
 
 import logging
 
@@ -6,7 +11,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QScrollArea, QGroupBox, QFormLayout,
     QLineEdit, QSpinBox, QCheckBox, QRadioButton,
-    QListWidget, QListWidgetItem, QMessageBox, QComboBox
+    QListWidget, QMessageBox, QComboBox, QDoubleSpinBox
 )
 from PyQt6.QtCore import Qt
 
@@ -62,7 +67,7 @@ SECTION_STYLE = """
 """
 
 INPUT_STYLE = """
-    QLineEdit, QSpinBox, QComboBox {
+    QLineEdit, QSpinBox, QComboBox, QDoubleSpinBox {
         min-height: 30px;
         padding: 4px 9px;
         border: 1px solid #cfd8d3;
@@ -71,7 +76,7 @@ INPUT_STYLE = """
         color: #1f2b27;
         selection-background-color: #f2c572;
     }
-    QLineEdit:focus, QSpinBox:focus, QComboBox:focus {
+    QLineEdit:focus, QSpinBox:focus, QComboBox:focus, QDoubleSpinBox:focus {
         border: 1px solid #2f7d68;
         background: #ffffff;
     }
@@ -140,10 +145,14 @@ STATUS_STYLE = """
 class GlobalSettingsPage(QWidget):
     """Page for global application settings."""
 
-    def __init__(self, config_manager, pet=None, parent=None):
+    def __init__(self, platform, parent=None):
+        """Create a global settings page owned by ``PetPlatform``."""
+        if platform is None or not hasattr(platform, "global_config"):
+            raise TypeError("GlobalSettingsPage requires a PetPlatform")
         super().__init__(parent)
-        self.config_manager = config_manager
-        self.pet = pet
+        self.platform = platform
+        self.config_manager = platform.global_config
+
         self.setup_ui()
         self.load_settings()
 
@@ -158,8 +167,9 @@ class GlobalSettingsPage(QWidget):
         title = QLabel("全局设置")
         title.setStyleSheet("font-size: 24px; font-weight: 800; color: #17201d;")
         layout.addWidget(title)
-        description = QLabel("调整行为、提醒、启动、托盘和本地 API 访问。")
+        description = QLabel("调整 API、托盘、启动、显示、LLM 与 MCP 等全局项。实例级配置请到「实例管理」中编辑。")
         description.setStyleSheet("font-size: 13px; color: #66736e;")
+        description.setWordWrap(True)
         layout.addWidget(description)
 
         # Scroll area
@@ -171,190 +181,53 @@ class GlobalSettingsPage(QWidget):
         scroll_layout.setContentsMargins(0, 0, 8, 0)
         scroll_layout.setSpacing(16)
 
-        # 1. Motion Control
-        motion_group = QGroupBox("运动控制")
-        motion_group.setStyleSheet("""
-            QGroupBox {
-                font-weight: bold;
-                font-size: 14px;
-                color: #333;
-                border: 1px solid #e0e0e0;
-                border-radius: 8px;
-                margin-top: 10px;
-                padding-top: 10px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px;
-            }
-        """)
-        motion_layout = QFormLayout(motion_group)
-        motion_layout.setSpacing(10)
-
-        # Mode selection
-        mode_layout = QHBoxLayout()
-        self.random_mode_rb = QRadioButton("随机模式")
-        self.motion_mode_rb = QRadioButton("运动模式")
-        self.random_mode_rb.setStyleSheet("QRadioButton { spacing: 10px; }")
-        self.motion_mode_rb.setStyleSheet("QRadioButton { spacing: 10px; }")
-        mode_layout.addWidget(self.random_mode_rb)
-        mode_layout.addWidget(self.motion_mode_rb)
-        mode_layout.addStretch()
-        motion_layout.addRow("当前模式", mode_layout)
-
-        # Random interval
-        self.min_interval_spin = QSpinBox()
-        self.min_interval_spin.setRange(1000, 60000)
-        self.min_interval_spin.setSuffix(" 毫秒")
-        self.min_interval_spin.setStyleSheet("padding: 6px; border: 1px solid #ddd; border-radius: 4px;")
-        motion_layout.addRow("最小间隔", self.min_interval_spin)
-
-        self.max_interval_spin = QSpinBox()
-        self.max_interval_spin.setRange(1000, 60000)
-        self.max_interval_spin.setSuffix(" 毫秒")
-        self.max_interval_spin.setStyleSheet("padding: 6px; border: 1px solid #ddd; border-radius: 4px;")
-        motion_layout.addRow("最大间隔", self.max_interval_spin)
-
-        # Speed
-        self.speed_spin = QSpinBox()
-        self.speed_spin.setRange(1, 20)
-        self.speed_spin.setSuffix(" 像素/帧")
-        self.speed_spin.setStyleSheet("padding: 6px; border: 1px solid #ddd; border-radius: 4px;")
-        motion_layout.addRow("运动速度", self.speed_spin)
-
-        scroll_layout.addWidget(motion_group)
-
-        # 2. Rest Reminder
-        rest_group = QGroupBox("休息提醒")
-        rest_group.setStyleSheet("""
-            QGroupBox {
-                font-weight: bold;
-                font-size: 14px;
-                color: #333;
-                border: 1px solid #e0e0e0;
-                border-radius: 8px;
-                margin-top: 10px;
-                padding-top: 10px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px;
-            }
-        """)
-        rest_layout = QFormLayout(rest_group)
-        rest_layout.setSpacing(10)
-
-        self.rest_enabled_cb = QCheckBox("启用休息提醒")
-        self.rest_enabled_cb.setStyleSheet("QCheckBox { spacing: 8px; }")
-        rest_layout.addRow("", self.rest_enabled_cb)
-
-        self.rest_interval_spin = QSpinBox()
-        self.rest_interval_spin.setRange(1, 180)
-        self.rest_interval_spin.setSuffix(" 分钟")
-        self.rest_interval_spin.setStyleSheet("padding: 6px; border: 1px solid #ddd; border-radius: 4px;")
-        rest_layout.addRow("提醒间隔", self.rest_interval_spin)
-
-        self.countdown_spin = QSpinBox()
-        self.countdown_spin.setRange(30, 1800)
-        self.countdown_spin.setSuffix(" 秒")
-        self.countdown_spin.setStyleSheet("padding: 6px; border: 1px solid #ddd; border-radius: 4px;")
-        rest_layout.addRow("倒计时时长", self.countdown_spin)
-
-        self.rest_intensity_combo = QComboBox()
-        self.rest_intensity_combo.addItem("轻柔", "gentle")
-        self.rest_intensity_combo.addItem("普通", "normal")
-        self.rest_intensity_combo.addItem("强提醒", "strong")
-        rest_layout.addRow("提醒强度", self.rest_intensity_combo)
-
-        scroll_layout.addWidget(rest_group)
-
-        # 3. Behavior
-        behavior_group = QGroupBox("行为与互动")
-        behavior_group.setStyleSheet("""
-            QGroupBox {
-                font-weight: bold;
-                font-size: 14px;
-                color: #333;
-                border: 1px solid #e0e0e0;
-                border-radius: 8px;
-                margin-top: 10px;
-                padding-top: 10px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px;
-            }
-        """)
-        behavior_layout = QFormLayout(behavior_group)
-        behavior_layout.setSpacing(10)
-
-        self.quiet_mode_cb = QCheckBox("安静模式")
-        self.quiet_mode_cb.setStyleSheet("QCheckBox { spacing: 8px; }")
-        behavior_layout.addRow("", self.quiet_mode_cb)
-
-        scroll_layout.addWidget(behavior_group)
-
-        # 3. System Settings
+        # 1. 系统设置（启动 + 托盘）
         system_group = QGroupBox("系统设置")
-        system_group.setStyleSheet("""
-            QGroupBox {
-                font-weight: bold;
-                font-size: 14px;
-                color: #333;
-                border: 1px solid #e0e0e0;
-                border-radius: 8px;
-                margin-top: 10px;
-                padding-top: 10px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px;
-            }
-        """)
         system_layout = QFormLayout(system_group)
         system_layout.setSpacing(10)
 
         self.startup_cb = QCheckBox("开机自启动")
-        self.startup_cb.setStyleSheet("QCheckBox { spacing: 8px; }")
         system_layout.addRow("", self.startup_cb)
 
+        self.start_hidden_cb = QCheckBox("启动时隐藏窗口")
+        system_layout.addRow("", self.start_hidden_cb)
+
         self.tray_enabled_cb = QCheckBox("启用托盘图标")
-        self.tray_enabled_cb.setStyleSheet("QCheckBox { spacing: 8px; }")
         system_layout.addRow("", self.tray_enabled_cb)
 
         self.minimize_to_tray_cb = QCheckBox("最小化到托盘")
-        self.minimize_to_tray_cb.setStyleSheet("QCheckBox { spacing: 8px; }")
         system_layout.addRow("", self.minimize_to_tray_cb)
 
         scroll_layout.addWidget(system_group)
 
-        # 4. API Settings
+        # 2. 显示设置（跨屏行为）
+        display_group = QGroupBox("显示设置")
+        display_layout = QFormLayout(display_group)
+        display_layout.setSpacing(10)
+
+        self.cross_screen_drag_cb = QCheckBox("允许拖动跨屏")
+        display_layout.addRow("", self.cross_screen_drag_cb)
+
+        self.cross_screen_random_walk_cb = QCheckBox("允许随机行为跨屏")
+        display_layout.addRow("", self.cross_screen_random_walk_cb)
+
+        self.remember_last_screen_cb = QCheckBox("重启时恢复上次所在屏")
+        display_layout.addRow("", self.remember_last_screen_cb)
+
+        self.cross_screen_walk_prob_spin = QDoubleSpinBox()
+        self.cross_screen_walk_prob_spin.setRange(0.0, 1.0)
+        self.cross_screen_walk_prob_spin.setSingleStep(0.1)
+        self.cross_screen_walk_prob_spin.setDecimals(2)
+        display_layout.addRow("边缘跨屏概率", self.cross_screen_walk_prob_spin)
+
+        scroll_layout.addWidget(display_group)
+
+        # 3. 本地 API
         api_group = QGroupBox("本地 API")
-        api_group.setStyleSheet("""
-            QGroupBox {
-                font-weight: bold;
-                font-size: 14px;
-                color: #333;
-                border: 1px solid #e0e0e0;
-                border-radius: 8px;
-                margin-top: 10px;
-                padding-top: 10px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px;
-            }
-        """)
         api_layout = QFormLayout(api_group)
         api_layout.setSpacing(10)
 
         self.api_enabled_cb = QCheckBox("启用 API 服务器")
-        self.api_enabled_cb.setStyleSheet("QCheckBox { spacing: 8px; }")
         api_layout.addRow("", self.api_enabled_cb)
 
         self.api_status_label = QLabel("API 状态：未知")
@@ -362,15 +235,13 @@ class GlobalSettingsPage(QWidget):
 
         self.host_edit = QLineEdit()
         self.host_edit.setPlaceholderText("127.0.0.1")
-        self.host_edit.setStyleSheet("padding: 6px; border: 1px solid #ddd; border-radius: 4px;")
         api_layout.addRow("主机地址", self.host_edit)
 
         self.port_spin = QSpinBox()
         self.port_spin.setRange(1024, 65535)
-        self.port_spin.setStyleSheet("padding: 6px; border: 1px solid #ddd; border-radius: 4px;")
         api_layout.addRow("端口号", self.port_spin)
 
-        # IP whitelist
+        # IP 白名单
         ip_label = QLabel("IP 白名单")
         api_layout.addRow(ip_label, self._create_ip_whitelist_widget())
 
@@ -386,8 +257,71 @@ class GlobalSettingsPage(QWidget):
 
         scroll_layout.addWidget(api_group)
 
+        # 4. LLM 设置
+        llm_group = QGroupBox("LLM 设置")
+        llm_layout = QFormLayout(llm_group)
+        llm_layout.setSpacing(10)
+
+        self.llm_enabled_cb = QCheckBox("启用 LLM 调用")
+        llm_layout.addRow("", self.llm_enabled_cb)
+
+        self.llm_api_key_edit = QLineEdit()
+        self.llm_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.llm_api_key_edit.setPlaceholderText("sk-...")
+        llm_layout.addRow("API Key", self.llm_api_key_edit)
+
+        self.llm_base_url_edit = QLineEdit()
+        self.llm_base_url_edit.setPlaceholderText("https://api.openai.com/v1")
+        llm_layout.addRow("Base URL", self.llm_base_url_edit)
+
+        self.llm_model_edit = QLineEdit()
+        self.llm_model_edit.setPlaceholderText("gpt-4o-mini")
+        llm_layout.addRow("模型", self.llm_model_edit)
+
+        self.llm_max_history_spin = QSpinBox()
+        self.llm_max_history_spin.setRange(1, 200)
+        llm_layout.addRow("最大历史轮数", self.llm_max_history_spin)
+
+        scroll_layout.addWidget(llm_group)
+
+        # 5. MCP 设置
+        mcp_group = QGroupBox("MCP 设置")
+        mcp_layout = QFormLayout(mcp_group)
+        mcp_layout.setSpacing(10)
+
+        self.mcp_enabled_cb = QCheckBox("启用 MCP 服务")
+        mcp_layout.addRow("", self.mcp_enabled_cb)
+
+        scroll_layout.addWidget(mcp_group)
+
         scroll.setWidget(scroll_content)
         layout.addWidget(scroll)
+
+        # 应用统一样式
+        for group in (system_group, display_group, api_group, llm_group, mcp_group):
+            group.setStyleSheet(SECTION_STYLE)
+
+        for field in (
+            self.host_edit, self.port_spin, self.ip_list,
+            self.cross_screen_walk_prob_spin,
+            self.llm_api_key_edit, self.llm_base_url_edit,
+            self.llm_model_edit, self.llm_max_history_spin,
+        ):
+            field.setStyleSheet(INPUT_STYLE)
+
+        for toggle in (
+            self.startup_cb, self.start_hidden_cb,
+            self.tray_enabled_cb, self.minimize_to_tray_cb,
+            self.cross_screen_drag_cb, self.cross_screen_random_walk_cb,
+            self.remember_last_screen_cb,
+            self.api_enabled_cb,
+            self.llm_enabled_cb, self.mcp_enabled_cb,
+        ):
+            toggle.setStyleSheet(CHECK_STYLE)
+
+        self.api_status_label.setStyleSheet(STATUS_STYLE)
+        self.start_api_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
+        self.stop_api_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
 
         # Bottom buttons
         bottom_layout = QHBoxLayout()
@@ -397,38 +331,6 @@ class GlobalSettingsPage(QWidget):
         save_btn.setStyleSheet(PRIMARY_BUTTON_STYLE)
         save_btn.clicked.connect(self.save_settings)
         bottom_layout.addWidget(save_btn)
-
-        for group in (motion_group, rest_group, behavior_group, system_group, api_group):
-            group.setStyleSheet(SECTION_STYLE)
-
-        for field in (
-            self.min_interval_spin,
-            self.max_interval_spin,
-            self.speed_spin,
-            self.rest_interval_spin,
-            self.countdown_spin,
-            self.rest_intensity_combo,
-            self.host_edit,
-            self.port_spin,
-            self.ip_list,
-        ):
-            field.setStyleSheet(INPUT_STYLE)
-
-        for toggle in (
-            self.random_mode_rb,
-            self.motion_mode_rb,
-            self.rest_enabled_cb,
-            self.quiet_mode_cb,
-            self.startup_cb,
-            self.tray_enabled_cb,
-            self.minimize_to_tray_cb,
-            self.api_enabled_cb,
-        ):
-            toggle.setStyleSheet(CHECK_STYLE)
-
-        self.api_status_label.setStyleSheet(STATUS_STYLE)
-        self.start_api_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
-        self.stop_api_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
 
         layout.addLayout(bottom_layout)
 
@@ -469,99 +371,162 @@ class GlobalSettingsPage(QWidget):
 
     def load_settings(self):
         """Load current settings."""
-        # Motion settings
-        motion_mode = self.config_manager.motion_mode
-        if motion_mode.default_mode == "random":
-            self.random_mode_rb.setChecked(True)
-        else:
-            self.motion_mode_rb.setChecked(True)
+        if not self.config_manager:
+            return
 
-        movement = self.config_manager.movement
-        self.min_interval_spin.setValue(movement.random_interval_min_ms)
-        self.max_interval_spin.setValue(movement.random_interval_max_ms)
-        self.speed_spin.setValue(motion_mode.movement_speed)
-
-        # Rest reminder
-        rest = self.config_manager.rest_reminder
-        self.rest_enabled_cb.setChecked(rest.enabled)
-        self.rest_interval_spin.setValue(rest.interval_minutes)
-        self.countdown_spin.setValue(rest.countdown_seconds)
-        intensity_index = self.rest_intensity_combo.findData(rest.intensity)
-        self.rest_intensity_combo.setCurrentIndex(max(0, intensity_index))
-
-        behavior = self.config_manager.behavior
-        self.quiet_mode_cb.setChecked(behavior.quiet_mode_enabled)
-
-        # System settings
+        # 启动
+        startup = self._get_config_value("startup", {})
         self.startup_cb.setChecked(is_startup_enabled())
+        self.start_hidden_cb.setChecked(bool(startup.get("start_hidden", False)))
 
-        tray = self.config_manager.tray
-        self.tray_enabled_cb.setChecked(tray.enabled)
-        self.minimize_to_tray_cb.setChecked(tray.minimize_to_tray)
+        # 托盘
+        tray = self._get_tray()
+        self.tray_enabled_cb.setChecked(getattr(tray, "enabled", True))
+        self.minimize_to_tray_cb.setChecked(getattr(tray, "minimize_to_tray", True))
 
-        # API settings
-        api_config = self.config_manager.config.get("api", {})
-        self.api_enabled_cb.setChecked(api_config.get("enabled", False))
+        # 显示
+        display = self._get_display()
+        self.cross_screen_drag_cb.setChecked(getattr(display, "cross_screen_drag", True))
+        self.cross_screen_random_walk_cb.setChecked(getattr(display, "cross_screen_random_walk", True))
+        self.remember_last_screen_cb.setChecked(getattr(display, "remember_last_screen", True))
+        self.cross_screen_walk_prob_spin.setValue(float(getattr(display, "cross_screen_walk_probability", 0.3)))
+
+        # API
+        api_config = self._get_api_config()
+        self.api_enabled_cb.setChecked(bool(api_config.get("enabled", False)))
         self.host_edit.setText(api_config.get("host", "127.0.0.1"))
-        self.port_spin.setValue(api_config.get("port", 8080))
-
-        # IP whitelist
+        self.port_spin.setValue(int(api_config.get("port", 8080)))
         self.ip_list.clear()
         for ip in api_config.get("allowed_ips", []):
             self.ip_list.addItem(ip)
         self.refresh_api_status()
 
+        # LLM
+        llm = self._get_llm()
+        self.llm_enabled_cb.setChecked(getattr(llm, "enabled", False))
+        self.llm_api_key_edit.setText(getattr(llm, "api_key", ""))
+        self.llm_base_url_edit.setText(getattr(llm, "base_url", "https://api.openai.com/v1"))
+        self.llm_model_edit.setText(getattr(llm, "model", "gpt-4o-mini"))
+        self.llm_max_history_spin.setValue(int(getattr(llm, "max_history", 20)))
+
+        # MCP
+        mcp_config = self._get_mcp_config()
+        self.mcp_enabled_cb.setChecked(bool(mcp_config.get("enabled", False)))
+
+    # ------------------------------------------------------------------
+    # 配置访问辅助
+    # ------------------------------------------------------------------
+    def _get_config_value(self, section, default):
+        """从 config_manager 的原始 dict 中读取段落。"""
+        if self.config_manager is None:
+            return default
+        cfg = getattr(self.config_manager, "config", None) or {}
+        return cfg.get(section, default)
+
+    def _get_tray(self):
+        if self.config_manager is None:
+            return None
+        # GlobalConfigManager 暴露 tray 属性
+        return getattr(self.config_manager, "tray", None)
+
+    def _get_display(self):
+        if self.config_manager is None:
+            return None
+        return getattr(self.config_manager, "display", None)
+
+    def _get_llm(self):
+        if self.config_manager is None:
+            return None
+        return getattr(self.config_manager, "llm", None)
+
+    def _get_api_config(self):
+        """获取 API 配置 dict。GlobalConfigManager 通过 .api 属性访问。"""
+        if self.config_manager is None:
+            return {}
+        api_attr = getattr(self.config_manager, "api", None)
+        if isinstance(api_attr, dict):
+            return api_attr
+        return {}
+
+    def _get_mcp_config(self):
+        """获取 MCP 配置 dict。GlobalConfigManager 通过 .mcp 属性访问。"""
+        if self.config_manager is None:
+            return {}
+        mcp_attr = getattr(self.config_manager, "mcp", None)
+        if isinstance(mcp_attr, dict):
+            return mcp_attr
+        return {}
+
+    # ------------------------------------------------------------------
+    # API 服务控制
+    # ------------------------------------------------------------------
     def refresh_api_status(self):
-        if self.pet and getattr(self.pet, "api_server", None):
-            if self.pet.api_server.is_running:
-                self.api_status_label.setText("API 状态：运行中")
-            else:
-                self.api_status_label.setText("API 状态：已停止")
-        else:
+        api_server = self.platform.api_server
+        if api_server is None:
             self.api_status_label.setText("API 状态：不可用")
+        elif api_server.is_running:
+            self.api_status_label.setText("API 状态：运行中")
+        else:
+            self.api_status_label.setText("API 状态：已停止")
 
     def start_api_server(self):
-        if self.pet and hasattr(self.pet, "_start_api_server"):
-            self.pet._start_api_server()
+        api_server = self.platform.api_server
+        if api_server is None:
+            QMessageBox.warning(self, "不可用", "API 服务器未初始化。")
+            return
+        if not api_server.start_background():
+            QMessageBox.critical(
+                self,
+                "启动失败",
+                str(api_server.last_error or "API 服务器启动失败"),
+            )
         self.refresh_api_status()
 
     def stop_api_server(self):
-        if self.pet and hasattr(self.pet, "_stop_api_server"):
-            self.pet._stop_api_server()
+        api_server = self.platform.api_server
+        if api_server is None:
+            QMessageBox.warning(self, "不可用", "API 服务器未初始化。")
+            return
+        if not api_server.stop_background():
+            QMessageBox.critical(
+                self,
+                "停止失败",
+                str(api_server.last_error or "API 服务器停止失败"),
+            )
         self.refresh_api_status()
 
+    # ------------------------------------------------------------------
+    # 保存
+    # ------------------------------------------------------------------
     def save_settings(self):
         """Save settings to config."""
+        if not self.config_manager:
+            QMessageBox.warning(self, "不可用", "配置管理器未就绪。")
+            return
         try:
             startup_enabled = self.startup_cb.isChecked()
             set_startup_enabled(startup_enabled)
+
             ip_list = []
             for i in range(self.ip_list.count()):
                 ip_list.append(self.ip_list.item(i).text())
 
             host = self.host_edit.text() or "127.0.0.1"
-            self.config_manager.save_global_settings({
-                "motion_mode": {
-                    "default_mode": "random" if self.random_mode_rb.isChecked() else "motion",
-                    "movement_speed": self.speed_spin.value(),
+
+            sections = {
+                "startup": {
+                    "enabled": startup_enabled,
+                    "start_hidden": self.start_hidden_cb.isChecked(),
                 },
-                "movement": {
-                    "random_interval_min_ms": self.min_interval_spin.value(),
-                    "random_interval_max_ms": self.max_interval_spin.value(),
-                },
-                "rest_reminder": {
-                    "enabled": self.rest_enabled_cb.isChecked(),
-                    "interval_minutes": self.rest_interval_spin.value(),
-                    "countdown_seconds": self.countdown_spin.value(),
-                    "intensity": self.rest_intensity_combo.currentData(),
-                },
-                "behavior": {
-                    "quiet_mode_enabled": self.quiet_mode_cb.isChecked(),
-                },
-                "startup": {"enabled": startup_enabled},
                 "tray": {
                     "enabled": self.tray_enabled_cb.isChecked(),
                     "minimize_to_tray": self.minimize_to_tray_cb.isChecked(),
+                },
+                "display": {
+                    "cross_screen_drag": self.cross_screen_drag_cb.isChecked(),
+                    "cross_screen_random_walk": self.cross_screen_random_walk_cb.isChecked(),
+                    "remember_last_screen": self.remember_last_screen_cb.isChecked(),
+                    "cross_screen_walk_probability": float(self.cross_screen_walk_prob_spin.value()),
                 },
                 "api": {
                     "enabled": self.api_enabled_cb.isChecked(),
@@ -569,20 +534,56 @@ class GlobalSettingsPage(QWidget):
                     "port": self.port_spin.value(),
                     "allowed_ips": ip_list,
                 },
-            })
+                "llm": {
+                    "enabled": self.llm_enabled_cb.isChecked(),
+                    "api_key": self.llm_api_key_edit.text(),
+                    "base_url": self.llm_base_url_edit.text() or "https://api.openai.com/v1",
+                    "model": self.llm_model_edit.text() or "gpt-4o-mini",
+                    "max_history": self.llm_max_history_spin.value(),
+                },
+                "mcp": {
+                    "enabled": self.mcp_enabled_cb.isChecked(),
+                },
+            }
 
-            if self.pet and getattr(self.pet, "api_server", None):
-                self.pet.api_server.configure(host, self.port_spin.value())
-                self.pet.api_server.set_allowed_ips(ip_list)
-                if self.api_enabled_cb.isChecked():
-                    self.pet._start_api_server()
-                else:
-                    self.pet._stop_api_server()
-                if getattr(self.pet, "behavior_scheduler", None):
-                    self.pet.behavior_scheduler.quiet_mode_enabled = self.quiet_mode_cb.isChecked()
+            old_api = self._get_api_config().copy()
+            api_server = self.platform.api_server
+            was_running = bool(api_server and api_server.is_running)
+            endpoint_changed = (
+                old_api.get("host", "127.0.0.1") != host
+                or int(old_api.get("port", 8080)) != self.port_spin.value()
+            )
+
+            self.config_manager.save_global_settings(sections)
+
+            if api_server is not None:
+                api_server.set_allowed_ips(ip_list)
+                api_server.set_trust_proxy_headers(
+                    bool(old_api.get("trust_proxy_headers", False))
+                )
+                if endpoint_changed and was_running:
+                    if not api_server.stop_background():
+                        raise RuntimeError(
+                            str(api_server.last_error or "API 服务器停止失败")
+                        )
+                    api_server.configure(host, self.port_spin.value())
+                elif endpoint_changed:
+                    api_server.configure(host, self.port_spin.value())
+
+                should_run = self.api_enabled_cb.isChecked()
+                if should_run and not api_server.is_running:
+                    if not api_server.start_background():
+                        raise RuntimeError(
+                            str(api_server.last_error or "API 服务器启动失败")
+                        )
+                elif not should_run and api_server.is_running:
+                    if not api_server.stop_background():
+                        raise RuntimeError(
+                            str(api_server.last_error or "API 服务器停止失败")
+                        )
                 self.refresh_api_status()
 
-            QMessageBox.information(self, "保存成功", "配置已保存，部分设置重启后生效。")
+            QMessageBox.information(self, "保存成功", "配置已保存。")
 
         except Exception as e:
             logging.error(f"Failed to save settings: {e}")

@@ -5,8 +5,6 @@
 """
 import logging
 from dataclasses import dataclass
-from typing import Optional
-
 from PyQt6.QtCore import QObject, QPoint, QRect, pyqtSignal
 from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtWidgets import QApplication, QWidget
@@ -42,31 +40,35 @@ class ScreenInfo:
 
 
 class ScreenManager(QObject):
-    """多屏幕管理器 - 提供跨屏逻辑的统一入口"""
+    """Platform-wide multi-screen manager keyed by pet_id."""
 
-    screens_changed = pyqtSignal()             # 显示器拓扑变化(热插拔)
-    current_screen_changed = pyqtSignal(int)   # 宠物所在屏变化
+    screens_changed = pyqtSignal()
+    current_screen_changed = pyqtSignal(str, int)
 
-    def __init__(self, app: QApplication, pet: Optional[QWidget] = None):
+    def __init__(self, app: QApplication):
         super().__init__()
         self._app = app
-        self._pet = pet
-        self._last_screen_index: int | None = None
+        self._pets: dict[str, QWidget] = {}
+        self._last_screen_indexes: dict[str, int] = {}
 
-        # 监听热插拔
         if app is not None:
             app.screenAdded.connect(self._on_screens_changed)
             app.screenRemoved.connect(self._on_screens_changed)
-            # 高版本 PyQt6 也有 screensChanged
             if hasattr(app, "screensChanged"):
                 try:
                     app.screensChanged.connect(self._on_screens_changed)
                 except (TypeError, AttributeError):
                     pass
 
-    # === 注册宠物 ===
-    def set_pet(self, pet: QWidget) -> None:
-        self._pet = pet
+    def register_pet(self, pet_id: str, pet: QWidget) -> None:
+        self._pets[pet_id] = pet
+        info = self.screen_for_widget(pet)
+        if info is not None:
+            self._last_screen_indexes[pet_id] = info.index
+
+    def unregister_pet(self, pet_id: str) -> None:
+        self._pets.pop(pet_id, None)
+        self._last_screen_indexes.pop(pet_id, None)
 
     # === 屏幕枚举 ===
     def all_screens(self) -> list[ScreenInfo]:
@@ -206,57 +208,45 @@ class ScreenManager(QObject):
         return g.x()
 
     # === 状态更新 ===
-    def notify_pet_screen(self, screen_index: int) -> None:
-        """由 pet 主动调用,通知其所在屏幕发生变化"""
-        if screen_index != self._last_screen_index:
-            self._last_screen_index = screen_index
-            self.current_screen_changed.emit(screen_index)
+    def notify_pet_screen(self, pet_id: str, screen_index: int) -> None:
+        if self._last_screen_indexes.get(pet_id) != screen_index:
+            self._last_screen_indexes[pet_id] = screen_index
+            self.current_screen_changed.emit(pet_id, screen_index)
 
     # === 热插拔处理 ===
     def _on_screens_changed(self, *args) -> None:
-        """显示器拓扑变化:迁移宠物到最近的可用屏幕"""
         logger.warning("Display topology changed (hot-plug event)")
-        if self._pet is None:
-            self.screens_changed.emit()
-            return
-
-        # 给 Qt 一个 tick 让拓扑稳定
         QGuiApplication.processEvents()
-        info = self.screen_for_widget(self._pet)
-        if info is not None:
-            # 宠物仍然在某个有效屏上,无需迁移
+        available = self.all_screens()
+        if not available:
+            logger.error("No screens available; pets stay at their current positions")
             self.screens_changed.emit()
             return
 
-        # 宠物所在屏消失,迁移到最近的屏
-        all_screens = self.all_screens()
-        if not all_screens:
-            logger.error("No screens available, pet stays at current position")
-            self.screens_changed.emit()
-            return
+        for pet_id, pet in list(self._pets.items()):
+            info = self.screen_for_widget(pet)
+            if info is not None:
+                self.notify_pet_screen(pet_id, info.index)
+                continue
 
-        center = self._pet.geometry().center()
-        best: ScreenInfo | None = None
-        best_dist = float("inf")
-        for s in all_screens:
-            sc = s.geometry.center()
-            d = (sc.x() - center.x()) ** 2 + (sc.y() - center.y()) ** 2
-            if d < best_dist:
-                best_dist = d
-                best = s
+            center = pet.geometry().center()
+            best = min(
+                available,
+                key=lambda screen: (
+                    (screen.geometry.center().x() - center.x()) ** 2
+                    + (screen.geometry.center().y() - center.y()) ** 2
+                ),
+            )
+            geometry = best.available_geometry
+            new_x = geometry.x() + max(0, (geometry.width() - pet.width()) // 2)
+            new_y = geometry.y() + geometry.height() - pet.height()
+            pet.move(new_x, new_y)
+            self.notify_pet_screen(pet_id, best.index)
+            logger.warning(
+                "Pet %s screen disconnected; moved to screen[%s] %s at (%s, %s)",
+                pet_id, best.index, best.name, new_x, new_y,
+            )
 
-        if best is None:
-            self.screens_changed.emit()
-            return
-
-        g = best.available_geometry
-        new_x = g.x() + max(0, (g.width() - self._pet.width()) // 2)
-        new_y = g.y() + g.height() - self._pet.height()
-        self._pet.move(new_x, new_y)
-        logger.warning(
-            f"Pet screen disconnected, moved to screen[{best.index}] {best.name} "
-            f"at ({new_x}, {new_y})"
-        )
         self.screens_changed.emit()
 
     # === 内部辅助 ===

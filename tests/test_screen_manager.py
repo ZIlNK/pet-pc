@@ -206,35 +206,60 @@ def test_opposite_edge_x_left_means_enter_from_right():
 
 
 # === _on_screens_changed 模拟热插拔 ===
-def test_hot_plug_migrates_pet_when_current_screen_removed():
-    """模拟副屏断连:宠物原本在副屏,断连后被迁到主屏"""
+def test_hot_plug_migrates_only_pet_on_removed_screen():
+    """A hot-plug event migrates only the instance on the removed screen."""
     s1 = make_qscreen("Primary", 0, 0, 1920, 1080, primary=True)
     s2 = make_qscreen("Secondary", 1920, 0, 1920, 1080)
     app = make_app_with_screens([s1, s2])
-
+    app.screenAt = MagicMock(
+        side_effect=lambda point: s1 if point.x() < 1920 else s2
+    )
     sm = ScreenManager(app)
 
-    # mock pet:几何中心需要能正常返回坐标,不能是 MagicMock
-    pet = MagicMock()
-    pet.width.return_value = 200
-    pet.height.return_value = 159
-    # 用真实 QRect 作为 geometry 返回值
-    pet.geometry.return_value.center.return_value = QPoint(2600, 579)
-    # 模拟:主屏移除后,只剩主屏
+    primary_pet = MagicMock()
+    primary_pet.width.return_value = 200
+    primary_pet.height.return_value = 159
+    primary_pet.geometry.return_value.center.return_value = QPoint(500, 579)
+
+    removed_pet = MagicMock()
+    removed_pet.width.return_value = 200
+    removed_pet.height.return_value = 159
+    removed_pet.geometry.return_value.center.return_value = QPoint(2600, 579)
+
+    sm.register_pet("primary-pet", primary_pet)
+    sm.register_pet("removed-pet", removed_pet)
+
     s1_only = make_qscreen("Primary", 0, 0, 1920, 1080, primary=True)
     app.screens.return_value = [s1_only]
     app.primaryScreen.return_value = s1_only
-    # screenAt 在新拓扑中找不到 (宠物中心 2600,579 已不在主屏内)
-    app.screenAt = MagicMock(return_value=None)
+    app.screenAt = MagicMock(
+        side_effect=lambda point: s1_only if point.x() < 1920 else None
+    )
+    changes = []
+    sm.current_screen_changed.connect(
+        lambda pet_id, index: changes.append((pet_id, index))
+    )
 
-    sm.set_pet(pet)
     sm._on_screens_changed()
 
-    # 验证 pet.move 被调用
-    assert pet.move.called
-    args, _ = pet.move.call_args
-    new_x, new_y = args
-    # x 应该在主屏内(0..1720)
+    primary_pet.move.assert_not_called()
+    removed_pet.move.assert_called_once()
+    new_x, new_y = removed_pet.move.call_args.args
     assert 0 <= new_x <= 1720
-    # y 应该接近主屏底部
     assert new_y == 1080 - 159
+    assert ("removed-pet", 0) in changes
+    assert not any(pet_id == "primary-pet" for pet_id, _ in changes)
+
+
+def test_notify_pet_screen_tracks_instances_independently():
+    sm = ScreenManager(make_app_with_screens([]))
+    changes = []
+    sm.current_screen_changed.connect(
+        lambda pet_id, index: changes.append((pet_id, index))
+    )
+
+    sm.notify_pet_screen("pet-a", 1)
+    sm.notify_pet_screen("pet-b", 0)
+    sm.notify_pet_screen("pet-a", 1)
+
+    assert changes == [("pet-a", 1), ("pet-b", 0)]
