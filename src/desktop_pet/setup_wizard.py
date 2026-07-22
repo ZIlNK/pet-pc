@@ -22,6 +22,16 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from .ui_style import (
+    INPUT_BORDER,
+    PAGE_STYLE,
+    PRIMARY_BUTTON_STYLE,
+    SECONDARY_BUTTON_STYLE,
+    TEXT_BODY,
+    TEXT_SECONDARY,
+    form_stylesheet,
+    subtitle_style,
+)
 from .utils import get_pets_path
 
 logger = logging.getLogger(__name__)
@@ -39,9 +49,10 @@ class SetupWizard(QDialog):
         self.setup_ui()
 
     def setup_ui(self):
-        self.setWindowTitle("Desktop Pet - 初始配置")
+        self.setWindowTitle("桌面宠物 - 初始配置")
         self.setFixedSize(450, 400)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
+        self.setStyleSheet(PAGE_STYLE + form_stylesheet())
 
         # 创建 Tab 控件
         tabs = QTabWidget(self)
@@ -63,14 +74,27 @@ class SetupWizard(QDialog):
         btn_bottom.addStretch()
 
         btn_skip = QPushButton("跳过")
+        btn_skip.setStyleSheet(SECONDARY_BUTTON_STYLE)
         btn_skip.clicked.connect(self.skip_setup)
         btn_bottom.addWidget(btn_skip)
 
         btn_exit = QPushButton("退出")
+        btn_exit.setStyleSheet(SECONDARY_BUTTON_STYLE)
         btn_exit.clicked.connect(self.reject)
         btn_bottom.addWidget(btn_exit)
 
         main_layout.addLayout(btn_bottom)
+
+    @staticmethod
+    def _image_label_style(selected: bool = False) -> str:
+        """图片虚线选择区样式（选中图片后切换文字颜色）。"""
+        color = TEXT_BODY if selected else TEXT_SECONDARY
+        return (
+            f"border: 2px dashed {INPUT_BORDER};"
+            f"border-radius: 12px;"
+            f"padding: 20px;"
+            f"color: {color};"
+        )
 
     def _create_quick_create_tab(self) -> QWidget:
         """创建快速创建 Tab"""
@@ -85,7 +109,7 @@ class SetupWizard(QDialog):
 
         description = QLabel("只需上传一张图片，即可创建您的专属桌宠")
         description.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        description.setStyleSheet("color: gray;")
+        description.setStyleSheet(subtitle_style())
         layout.addWidget(description)
 
         # 表单布局
@@ -106,11 +130,12 @@ class SetupWizard(QDialog):
 
         self.image_path_label = QLabel("未选择图片")
         self.image_path_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_path_label.setStyleSheet("border: 1px dashed #aaa; padding: 20px; color: gray;")
+        self.image_path_label.setStyleSheet(self._image_label_style())
         image_layout.addWidget(self.image_path_label)
 
         btn_select_image = QPushButton("选择图片")
         btn_select_image.setMinimumHeight(40)
+        btn_select_image.setStyleSheet(SECONDARY_BUTTON_STYLE)
         btn_select_image.clicked.connect(self._select_image_for_quick_create)
         image_layout.addWidget(btn_select_image)
 
@@ -119,7 +144,7 @@ class SetupWizard(QDialog):
         # 创建按钮
         btn_create = QPushButton("创建桌宠")
         btn_create.setMinimumHeight(45)
-        btn_create.setStyleSheet("font-weight: bold;")
+        btn_create.setStyleSheet(PRIMARY_BUTTON_STYLE)
         btn_create.clicked.connect(self._quick_create_pet)
         layout.addWidget(btn_create)
 
@@ -150,6 +175,7 @@ class SetupWizard(QDialog):
         # 选项1: 选择宠物资源目录
         btn_select_dir = QPushButton("选择宠物资源目录")
         btn_select_dir.setToolTip("选择一个包含宠物资源包的目录")
+        btn_select_dir.setStyleSheet(SECONDARY_BUTTON_STYLE)
         btn_select_dir.clicked.connect(self.select_pets_directory)
         btn_select_dir.setMinimumHeight(40)
         btn_layout.addWidget(btn_select_dir)
@@ -157,6 +183,7 @@ class SetupWizard(QDialog):
         # 选项2: 导入宠物资源包
         btn_import = QPushButton("导入宠物资源包 (ZIP)")
         btn_import.setToolTip("从ZIP文件导入宠物资源包")
+        btn_import.setStyleSheet(SECONDARY_BUTTON_STYLE)
         btn_import.clicked.connect(self.import_pet_package)
         btn_import.setMinimumHeight(40)
         btn_layout.addWidget(btn_import)
@@ -164,6 +191,7 @@ class SetupWizard(QDialog):
         # 选项3: 从项目复制默认宠物
         btn_copy_default = QPushButton("从项目复制默认宠物")
         btn_copy_default.setToolTip("从项目目录复制默认宠物资源 (开发模式)")
+        btn_copy_default.setStyleSheet(SECONDARY_BUTTON_STYLE)
         btn_copy_default.clicked.connect(self.copy_default_pet_from_project)
         btn_copy_default.setMinimumHeight(40)
         btn_layout.addWidget(btn_copy_default)
@@ -180,7 +208,7 @@ class SetupWizard(QDialog):
             "pets/宠物名/meta.json\n"
             "pets/宠物名/animations/*.webp (或 .gif, .png)"
         )
-        structure_label.setStyleSheet("color: gray; font-size: 11px;")
+        structure_label.setStyleSheet(subtitle_style() + "font-size: 11px;")
         info_layout.addWidget(structure_label)
 
         layout.addWidget(info_frame)
@@ -200,7 +228,7 @@ class SetupWizard(QDialog):
             self._selected_image_path = Path(file_path)
             # 显示文件名
             self.image_path_label.setText(self._selected_image_path.name)
-            self.image_path_label.setStyleSheet("border: 1px dashed #aaa; padding: 20px; color: #333;")
+            self.image_path_label.setStyleSheet(self._image_label_style(selected=True))
 
     def _quick_create_pet(self):
         """快速创建宠物素材包"""

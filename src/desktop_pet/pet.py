@@ -2,7 +2,7 @@ import logging
 import random
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from PyQt6.QtWidgets import QLabel, QWidget, QMenu, QLineEdit, QPushButton, QVBoxLayout
+from PyQt6.QtWidgets import QLabel, QWidget, QMenu, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout
 from PyQt6.QtGui import QPixmap, QMovie, QImageReader, QAction, QCursor
 from PyQt6.QtCore import Qt, QPoint, QTimer, QSize, pyqtSignal
 
@@ -24,6 +24,19 @@ from .motion_controller import MotionModeController
 from .motion_control_panel import MotionControlPanel
 from .behavior_scheduler import BehaviorScheduler
 from .screen_manager import ScreenInfo
+from .ui_style import (
+    BORDER,
+    CARD,
+    INPUT_STYLE,
+    MENU_STYLE,
+    PRIMARY_BUTTON_STYLE,
+    RADIUS_CARD,
+    TEXT_BODY,
+    TEXT_SECONDARY,
+    apply_shadow,
+    fade_in,
+    fade_out,
+)
 
 if TYPE_CHECKING:
     from .pet_platform import PetPlatform
@@ -31,26 +44,83 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+BUBBLE_LABEL_STYLE = f"""
+    background-color: {CARD};
+    border: 1px solid {BORDER};
+    border-radius: {RADIUS_CARD}px;
+    padding: 8px;
+    color: {TEXT_BODY};
+    font-size: 12px;
+    text-align: center;
+"""
+
+
 class ChatBubble(QWidget):
     """可交互的聊天气泡，用于显示消息和接收用户输入。"""
 
     message_sent = pyqtSignal(str)  # 用户发送消息时触发
+    close_requested = pyqtSignal()  # 点击关闭按钮时触发
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setFixedWidth(220)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(4)
+        outer_layout = QVBoxLayout(self)
+        # 透明外壳为容器投影预留绘制空间
+        outer_layout.setContentsMargins(14, 10, 14, 16)
+        outer_layout.setSpacing(0)
+
+        container = QWidget(self)
+        container.setObjectName("chatBubbleContainer")
+        container.setStyleSheet(f"""
+            QWidget#chatBubbleContainer {{
+                background: {CARD};
+                border: 1px solid {BORDER};
+                border-radius: {RADIUS_CARD}px;
+            }}
+        """)
+        apply_shadow(container)
+        outer_layout.addWidget(container)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(10, 6, 6, 10)
+        layout.setSpacing(6)
+
+        # 顶部行：弹簧 + 关闭按钮
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.addStretch()
+        self.close_button = QPushButton("×")
+        self.close_button.setFixedSize(20, 20)
+        self.close_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.close_button.setToolTip("关闭")
+        self.close_button.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                border: none;
+                border-radius: 10px;
+                color: {TEXT_SECONDARY};
+                font-size: 14px;
+                font-weight: 700;
+                padding: 0;
+            }}
+            QPushButton:hover {{
+                background: {BORDER};
+                color: {TEXT_BODY};
+            }}
+        """)
+        self.close_button.clicked.connect(self.close_requested.emit)
+        header_layout.addWidget(self.close_button)
+        layout.addLayout(header_layout)
 
         # 消息显示区域
         self.message_label = QLabel()
         self.message_label.setWordWrap(True)
         self.message_label.setStyleSheet(
-            "color: #333; font-size: 12px; padding: 4px; background: transparent;"
+            f"color: {TEXT_BODY}; font-size: 12px; padding: 4px; "
+            "background: transparent; border: none;"
         )
         self.message_label.setMaximumHeight(80)
         layout.addWidget(self.message_label)
@@ -58,26 +128,16 @@ class ChatBubble(QWidget):
         # 输入框
         self.input_field = QLineEdit()
         self.input_field.setPlaceholderText("输入消息...")
-        self.input_field.setStyleSheet(
-            "border: 1px solid #ccc; border-radius: 4px; padding: 4px; font-size: 11px;"
-        )
+        self.input_field.setStyleSheet(INPUT_STYLE)
         self.input_field.returnPressed.connect(self._on_send)
         layout.addWidget(self.input_field)
 
         # 发送按钮
         self.send_button = QPushButton("发送")
-        self.send_button.setFixedHeight(24)
-        self.send_button.setStyleSheet(
-            "background-color: #4a9eff; color: white; border: none; "
-            "border-radius: 4px; font-size: 11px; padding: 2px 8px;"
-        )
+        self.send_button.setStyleSheet(PRIMARY_BUTTON_STYLE)
         self.send_button.clicked.connect(self._on_send)
         layout.addWidget(self.send_button)
 
-        self.setStyleSheet(
-            "background-color: white; border: 2px solid #4a9eff; "
-            "border-radius: 10px;"
-        )
         self.hide()
 
     def set_message(self, text: str):
@@ -571,17 +631,8 @@ class DesktopPet(QWidget):
 
         self.bubble_label = QLabel(self)
         self.bubble_label.setText("注意休息！\n点击开始倒计时")
-        self.bubble_label.setStyleSheet(
-            """
-            background-color: white;
-            border: 2px solid #ccc;
-            border-radius: 10px;
-            padding: 8px;
-            color: black;
-            font-size: 12px;
-            text-align: center;
-            """
-        )
+        self.bubble_label.setStyleSheet(BUBBLE_LABEL_STYLE)
+        apply_shadow(self.bubble_label, blur=16, y_offset=3)
         self.bubble_label.installEventFilter(self)
         self.bubble_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         
@@ -595,6 +646,7 @@ class DesktopPet(QWidget):
         # 可交互聊天气泡（用于 MCP/AI 消息交互）
         self.chat_bubble = ChatBubble()
         self.chat_bubble.message_sent.connect(self._on_chat_message_sent)
+        self.chat_bubble.close_requested.connect(self.hide_chat_bubble)
 
         original_width = self.regular_pixmap.width()
         increased_width = original_width + 100
@@ -752,17 +804,7 @@ class DesktopPet(QWidget):
             duration_ms: 显示时长（毫秒），0=持续显示，默认 5 秒
         """
         self.bubble_label.setText(text)
-        self.bubble_label.setStyleSheet(
-            """
-            background-color: white;
-            border: 2px solid #ccc;
-            border-radius: 10px;
-            padding: 8px;
-            color: black;
-            font-size: 12px;
-            text-align: center;
-            """
-        )
+        self.bubble_label.setStyleSheet(BUBBLE_LABEL_STYLE)
         bubble_width = 120
         x_pos = 10
         y_pos = 10
@@ -789,10 +831,12 @@ class DesktopPet(QWidget):
         # 定位在宠物上方
         self.chat_bubble.move(self.x() - 110, self.y() - 140)
         self.chat_bubble.show()
+        fade_in(self.chat_bubble)
 
     def hide_chat_bubble(self):
         """隐藏聊天气泡"""
-        self.chat_bubble.hide()
+        if self.chat_bubble.isVisible():
+            fade_out(self.chat_bubble)
 
     def _on_chat_message_sent(self, text: str):
         """Forward a chat-bubble message to the platform API queue."""
@@ -801,11 +845,12 @@ class DesktopPet(QWidget):
     def _toggle_chat_bubble(self):
         """切换聊天气泡的显示/隐藏"""
         if self.chat_bubble.isVisible():
-            self.chat_bubble.hide()
+            fade_out(self.chat_bubble)
         else:
             self.chat_bubble.set_message("有什么想说的？")
             self.chat_bubble.move(self.x() - 110, self.y() - 140)
             self.chat_bubble.show()
+            fade_in(self.chat_bubble)
 
     def switch_to_gif(self, direction: str = 'right'):
         if self.state == PetState.REST_REMINDER:
@@ -1091,6 +1136,7 @@ class DesktopPet(QWidget):
 
     def contextMenuEvent(self, event):
         context_menu = QMenu(self)
+        context_menu.setStyleSheet(MENU_STYLE)
 
         chat_action = QAction("与 AI 对话", self)
         chat_action.triggered.connect(self._toggle_chat_bubble)
@@ -1107,11 +1153,16 @@ class DesktopPet(QWidget):
 
         context_menu.exec(event.globalPos())
     def _open_settings_center(self):
-        """Open the platform settings center."""
-        from .settings_center import SettingsCenter
+        """打开设置中心（复用入口模块中的单例窗口，避免与托盘入口各开一个）。"""
+        import sys
 
-        settings_center = SettingsCenter(self._platform, self)
-        settings_center.exec()
+        # python -m desktop_pet 启动时，desktop_pet/__main__.py 以 __main__
+        # 身份运行，单例入口 _open_settings 挂在 sys.modules["__main__"] 上；
+        # console 脚本（desktop-pet）启动时则在 desktop_pet.__main__ 模块上。
+        open_settings = getattr(sys.modules.get("__main__"), "_open_settings", None)
+        if open_settings is None:
+            from .__main__ import _open_settings as open_settings
+        open_settings(self._platform)
     def _switch_to_motion_mode(self):
         self.motion_controller.set_mode("motion")
 
@@ -1718,7 +1769,8 @@ class DesktopPet(QWidget):
         self.animation_current_y = y
 
         distance = abs(end_x - start_x)
-        pixels_per_step = self.motion_controller.movement_speed
+        # Speed level 5 matches the legacy pace of 1 pixel per 20 ms tick.
+        pixels_per_step = self.motion_controller.movement_speed / 5
 
         if distance == 0:
             self.animation_total_steps = 1

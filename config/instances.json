@@ -1,11 +1,11 @@
 {
   "instances": [
     {
-      "pet_id": "195d2b3e",
+      "pet_id": "d419abbf",
       "package": "default",
       "primary": true,
       "position": {
-        "x": 74,
+        "x": 7,
         "y": 726
       },
       "screen_index": 0,

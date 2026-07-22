@@ -6,6 +6,14 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 
 from .click_zone_dialog import ClickZoneConfigDialog
+from .ui_style import (
+    CHECK_STYLE,
+    INPUT_STYLE,
+    PAGE_STYLE,
+    PRIMARY_BUTTON_STYLE,
+    SECONDARY_BUTTON_STYLE,
+    SECTION_STYLE,
+)
 
 
 class MotionControlPanel(QDialog):
@@ -21,7 +29,11 @@ class MotionControlPanel(QDialog):
         self.refresh_click_detection_state()
 
     def setup_ui(self):
+        self.setStyleSheet(PAGE_STYLE + SECTION_STYLE + INPUT_STYLE + CHECK_STYLE)
+
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
 
         mode_group = QGroupBox("模式控制")
         mode_layout = QHBoxLayout(mode_group)
@@ -30,10 +42,12 @@ class MotionControlPanel(QDialog):
         mode_layout.addWidget(self.mode_label)
 
         self.random_mode_btn = QPushButton("切换到随机模式")
+        self.random_mode_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
         self.random_mode_btn.clicked.connect(self.switch_to_random)
         mode_layout.addWidget(self.random_mode_btn)
 
         self.motion_mode_btn = QPushButton("切换到运动模式")
+        self.motion_mode_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
         self.motion_mode_btn.clicked.connect(self.switch_to_motion)
         mode_layout.addWidget(self.motion_mode_btn)
 
@@ -59,14 +73,17 @@ class MotionControlPanel(QDialog):
 
         move_btn_layout = QHBoxLayout()
         self.move_to_btn = QPushButton("移动到")
+        self.move_to_btn.setStyleSheet(PRIMARY_BUTTON_STYLE)
         self.move_to_btn.clicked.connect(self.on_move_to_clicked)
         move_btn_layout.addWidget(self.move_to_btn)
 
         self.move_to_edge_left_btn = QPushButton("左边缘")
+        self.move_to_edge_left_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
         self.move_to_edge_left_btn.clicked.connect(lambda: self.on_move_to_edge("left"))
         move_btn_layout.addWidget(self.move_to_edge_left_btn)
 
         self.move_to_edge_right_btn = QPushButton("右边缘")
+        self.move_to_edge_right_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
         self.move_to_edge_right_btn.clicked.connect(lambda: self.on_move_to_edge("right"))
         move_btn_layout.addWidget(self.move_to_edge_right_btn)
 
@@ -79,21 +96,25 @@ class MotionControlPanel(QDialog):
 
         self.up_btn = QPushButton("↑")
         self.up_btn.setMaximumWidth(50)
+        self.up_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
         self.up_btn.clicked.connect(lambda: self.on_direction_move(0, -50))
         direction_layout.addWidget(self.up_btn)
 
         self.down_btn = QPushButton("↓")
         self.down_btn.setMaximumWidth(50)
+        self.down_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
         self.down_btn.clicked.connect(lambda: self.on_direction_move(0, 50))
         direction_layout.addWidget(self.down_btn)
 
         self.left_btn = QPushButton("←")
         self.left_btn.setMaximumWidth(50)
+        self.left_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
         self.left_btn.clicked.connect(lambda: self.on_direction_move(-50, 0))
         direction_layout.addWidget(self.left_btn)
 
         self.right_btn = QPushButton("→")
         self.right_btn.setMaximumWidth(50)
+        self.right_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
         self.right_btn.clicked.connect(lambda: self.on_direction_move(50, 0))
         direction_layout.addWidget(self.right_btn)
 
@@ -107,10 +128,12 @@ class MotionControlPanel(QDialog):
 
         anim_btn_layout = QHBoxLayout()
         self.play_anim_btn = QPushButton("播放选中动画")
+        self.play_anim_btn.setStyleSheet(PRIMARY_BUTTON_STYLE)
         self.play_anim_btn.clicked.connect(self.on_play_animation)
         anim_btn_layout.addWidget(self.play_anim_btn)
 
         self.stop_anim_btn = QPushButton("停止动画")
+        self.stop_anim_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
         self.stop_anim_btn.clicked.connect(self.on_stop_animation)
         anim_btn_layout.addWidget(self.stop_anim_btn)
 
@@ -122,10 +145,12 @@ class MotionControlPanel(QDialog):
         walk_layout = QHBoxLayout(walk_group)
 
         self.walk_left_btn = QPushButton("向左行走")
+        self.walk_left_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
         self.walk_left_btn.clicked.connect(lambda: self.on_play_walk("left"))
         walk_layout.addWidget(self.walk_left_btn)
 
         self.walk_right_btn = QPushButton("向右行走")
+        self.walk_right_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
         self.walk_right_btn.clicked.connect(lambda: self.on_play_walk("right"))
         walk_layout.addWidget(self.walk_right_btn)
 
@@ -139,12 +164,14 @@ class MotionControlPanel(QDialog):
         click_detection_layout.addWidget(self.click_detection_checkbox)
 
         self.config_zones_btn = QPushButton("配置点击区域")
+        self.config_zones_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
         self.config_zones_btn.clicked.connect(self.on_config_zones_clicked)
         click_detection_layout.addWidget(self.config_zones_btn)
 
         layout.addWidget(click_detection_group)
 
         self.refresh_btn = QPushButton("刷新")
+        self.refresh_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
         self.refresh_btn.clicked.connect(self.refresh_all)
         layout.addWidget(self.refresh_btn)
 

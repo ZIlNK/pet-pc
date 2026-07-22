@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import QSystemTrayIcon, QMenu
 from PyQt6.QtGui import QIcon, QAction, QPixmap, QPainter
 from PyQt6.QtCore import Qt, pyqtSignal
 
+from .ui_style import MENU_STYLE
 from .utils import get_pets_path
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,7 @@ class SystemTrayIcon(QSystemTrayIcon):
 
     def _create_menu(self):
         self.menu = QMenu()
+        self.menu.setStyleSheet(MENU_STYLE)
         primary = self._platform.get_primary_instance()
         primary_id = primary.pet_id if primary is not None else None
 

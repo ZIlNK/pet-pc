@@ -24,6 +24,7 @@ import logging
 import sys
 import threading
 
+from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QApplication
 
 from .cli_client import CliError, check_main_process, get_api_base
@@ -386,9 +387,12 @@ def _run_gui(args: argparse.Namespace) -> None:
     from .system_tray import SystemTrayIcon
     from .setup_wizard import SetupWizard
     from .pet_loader import PetLoader
+    from .ui_style import global_app_stylesheet
 
     app = QApplication(sys.argv)
     app.setApplicationName("Desktop Pet")
+    app.setFont(QFont("Microsoft YaHei UI", 10))
+    app.setStyleSheet(global_app_stylesheet())
 
     # 首次运行检查：若无宠物资源，显示向导
     pet_loader = PetLoader()

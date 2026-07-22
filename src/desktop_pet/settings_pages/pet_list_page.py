@@ -10,6 +10,12 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QPixmap, QMovie
 
+from ..ui_style import (
+    CARD_STYLE, PRIMARY_BUTTON_STYLE, SECONDARY_BUTTON_STYLE,
+    BG, BORDER, PRIMARY, TEXT_HEADING, TEXT_SECONDARY, SUCCESS_BG,
+    RADIUS, title_style, subtitle_style,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -25,55 +31,6 @@ def resolve_pet_preview_path(pet_package) -> Path | None:
         if preview_path.exists():
             return preview_path
     return None
-
-
-PRIMARY_BUTTON_STYLE = """
-    QPushButton {
-        background: #2f7d68;
-        color: #ffffff;
-        border: none;
-        padding: 6px 12px;
-        border-radius: 4px;
-        font-weight: 600;
-    }
-    QPushButton:hover {
-        background: #256a58;
-    }
-    QPushButton:disabled {
-        background: #cfd8d3;
-        color: #f5f7f4;
-    }
-"""
-
-SECONDARY_BUTTON_STYLE = """
-    QPushButton {
-        background: white;
-        color: #2f7d68;
-        border: 1px solid #2f7d68;
-        padding: 6px 12px;
-        border-radius: 4px;
-    }
-    QPushButton:hover {
-        background: #edf5f1;
-    }
-    QPushButton:disabled {
-        color: #cfd8d3;
-        border-color: #cfd8d3;
-        background: #f5f7f4;
-    }
-"""
-
-CARD_STYLE = """
-    QFrame {
-        background: white;
-        border: 1px solid #e0e0e0;
-        border-radius: 12px;
-    }
-    QFrame:hover {
-        border-color: #2f7d68;
-        background: #fafafa;
-    }
-"""
 
 
 class PetListPage(QWidget):
@@ -101,20 +58,20 @@ class PetListPage(QWidget):
     def setup_ui(self):
         """Setup UI layout."""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setContentsMargins(28, 24, 28, 22)
         layout.setSpacing(15)
 
         # Header
         header_layout = QHBoxLayout()
         header = QLabel("您的桌宠")
-        header.setStyleSheet("font-size: 20px; font-weight: bold; color: #333;")
+        header.setStyleSheet(title_style(20))
         header_layout.addWidget(header)
         header_layout.addStretch()
 
         # 实例计数标签（仅 platform 模式下显示）
         self.instance_count_label = QLabel("")
         self.instance_count_label.setStyleSheet(
-            "font-size: 13px; color: #2f7d68; font-weight: 600;"
+            f"font-size: 13px; color: {PRIMARY}; font-weight: 600;"
         )
         header_layout.addWidget(self.instance_count_label)
         layout.addLayout(header_layout)
@@ -168,21 +125,21 @@ class PetListPage(QWidget):
             movie.stop()
         self.preview_movies.clear()
 
-        # Pet cards
-        col = 0
-        for pet in self.pets:
+        # Pet cards（两列换行，与实例管理页一致）
+        for idx, pet in enumerate(self.pets):
             card = self._create_pet_card(pet)
-            self.cards_layout.addWidget(card, 0, col)
+            self.cards_layout.addWidget(card, idx // 2, idx % 2)
             self.pet_cards.append(card)
-            col += 1
 
         # New pet card
+        next_idx = len(self.pets)
         new_card = self._create_new_pet_card()
-        self.cards_layout.addWidget(new_card, 0, col)
+        self.cards_layout.addWidget(new_card, next_idx // 2, next_idx % 2)
 
         # Import card
+        import_idx = next_idx + 1
         import_card = self._create_import_card()
-        self.cards_layout.addWidget(import_card, 0, col + 1)
+        self.cards_layout.addWidget(import_card, import_idx // 2, import_idx % 2)
 
     def _create_pet_card(self, pet_package) -> QFrame:
         """Create a pet card widget。每张卡片包含预览与「创建实例」按钮。"""
@@ -198,7 +155,7 @@ class PetListPage(QWidget):
         preview = QLabel()
         preview.setFixedHeight(90)
         preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        preview.setStyleSheet("background: #f5f5f5; border-radius: 8px;")
+        preview.setStyleSheet(f"background: {BG}; border-radius: {RADIUS}px;")
 
         # Try to load preview media, falling back to the regular pet image.
         try:
@@ -212,7 +169,9 @@ class PetListPage(QWidget):
                     self.preview_movies.append(movie)
                 else:
                     preview.setText("预览不可用")
-                    preview.setStyleSheet("background: #f5f5f5; border-radius: 8px; color: #888;")
+                    preview.setStyleSheet(
+                f"background: {BG}; border-radius: {RADIUS}px; color: {TEXT_SECONDARY};"
+            )
             elif preview_file:
                 pixmap = QPixmap(str(preview_file))
                 scaled = pixmap.scaled(
@@ -223,22 +182,26 @@ class PetListPage(QWidget):
                 preview.setPixmap(scaled)
             else:
                 preview.setText("预览不可用")
-                preview.setStyleSheet("background: #f5f5f5; border-radius: 8px; color: #888;")
+                preview.setStyleSheet(
+                f"background: {BG}; border-radius: {RADIUS}px; color: {TEXT_SECONDARY};"
+            )
         except Exception as e:
             logger.warning(f"Failed to load pet preview for {pet_package.name}: {e}")
             preview.setText("预览不可用")
-            preview.setStyleSheet("background: #f5f5f5; border-radius: 8px; color: #888;")
+            preview.setStyleSheet(
+                f"background: {BG}; border-radius: {RADIUS}px; color: {TEXT_SECONDARY};"
+            )
 
         layout.addWidget(preview)
 
         # Name
         name = QLabel(pet_package.meta.name)
-        name.setStyleSheet("font-size: 14px; font-weight: bold; color: #333;")
+        name.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {TEXT_HEADING};")
         layout.addWidget(name)
 
         # Author
         author = QLabel(f"作者: {pet_package.meta.author}")
-        author.setStyleSheet("font-size: 11px; color: #888;")
+        author.setStyleSheet(f"font-size: 11px; color: {TEXT_SECONDARY};")
         layout.addWidget(author)
 
         layout.addStretch()
@@ -264,16 +227,16 @@ class PetListPage(QWidget):
         """Create new pet card."""
         card = QFrame()
         card.setFixedSize(180, 230)
-        card.setStyleSheet("""
-            QFrame {
-                background: #f8f8f8;
-                border: 2px dashed #ccc;
+        card.setStyleSheet(f"""
+            QFrame {{
+                background: {BG};
+                border: 2px dashed {BORDER};
                 border-radius: 12px;
-            }
-            QFrame:hover {
-                border-color: #2f7d68;
-                background: #e8f4fc;
-            }
+            }}
+            QFrame:hover {{
+                border-color: {PRIMARY};
+                background: {SUCCESS_BG};
+            }}
         """)
 
         layout = QVBoxLayout(card)
@@ -282,12 +245,12 @@ class PetListPage(QWidget):
         # Plus icon
         plus = QLabel("+")
         plus.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        plus.setStyleSheet("font-size: 48px; color: #888; margin-top: 20px;")
+        plus.setStyleSheet(f"font-size: 48px; color: {TEXT_SECONDARY}; margin-top: 20px;")
         layout.addWidget(plus)
 
         text = QLabel("新建桌宠")
         text.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        text.setStyleSheet("color: #666; font-size: 13px;")
+        text.setStyleSheet(subtitle_style())
         layout.addWidget(text)
 
         layout.addStretch()
@@ -302,16 +265,16 @@ class PetListPage(QWidget):
         """Create import card."""
         card = QFrame()
         card.setFixedSize(180, 230)
-        card.setStyleSheet("""
-            QFrame {
-                background: #f8f8f8;
-                border: 2px dashed #ccc;
+        card.setStyleSheet(f"""
+            QFrame {{
+                background: {BG};
+                border: 2px dashed {BORDER};
                 border-radius: 12px;
-            }
-            QFrame:hover {
-                border-color: #2f7d68;
-                background: #e8f4fc;
-            }
+            }}
+            QFrame:hover {{
+                border-color: {PRIMARY};
+                background: {SUCCESS_BG};
+            }}
         """)
 
         layout = QVBoxLayout(card)
@@ -325,7 +288,7 @@ class PetListPage(QWidget):
 
         text = QLabel("导入")
         text.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        text.setStyleSheet("color: #666; font-size: 13px;")
+        text.setStyleSheet(subtitle_style())
         layout.addWidget(text)
 
         layout.addStretch()

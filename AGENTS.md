@@ -155,6 +155,7 @@ Destroy Instance:
 - `src/desktop_pet/pet_platform.py`: 平台核心类 `PetPlatform`，多实例生命周期管理入口
 - `src/desktop_pet/pet_instance.py`: 实例配置数据模型 `PetInstanceConfig` 与 `generate_pet_id`
 - `src/desktop_pet/instances_store.py`: 实例配置存储 `InstancesStore`，CRUD 与持久化
+- `src/desktop_pet/ui_style.py`: 共享 UI 设计系统。集中管理颜色/字体/圆角 tokens（深绿 `#2f7d68` + 琥珀 `#f2c572` 体系）、共用 QSS（按钮/输入/卡片/导航/菜单/滚动条等）与视觉效果辅助（`apply_shadow` / `fade_in` / `fade_out` / `global_app_stylesheet`）。**所有 UI 文件必须从这里取样式，禁止新增硬编码颜色/样式字符串**
 
 ## Adding New Animations
 

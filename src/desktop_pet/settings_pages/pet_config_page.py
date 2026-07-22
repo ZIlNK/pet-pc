@@ -13,81 +13,14 @@ from PyQt6.QtCore import pyqtSignal
 
 from ..click_zone_dialog import ClickZoneConfigDialog
 from ..config_manager import ClickZoneConfig
+from ..ui_style import (
+    SECTION_STYLE, INPUT_STYLE, CHECK_STYLE,
+    PRIMARY_BUTTON_STYLE, SECONDARY_BUTTON_STYLE,
+    FONT_SIZE_TITLE, title_style, subtitle_style,
+)
 
 
 logger = logging.getLogger(__name__)
-
-
-SECTION_STYLE = """
-    QGroupBox {
-        background: #ffffff;
-        border: 1px solid #dfe6e1;
-        border-radius: 8px;
-        margin-top: 18px;
-        padding: 18px 18px 16px 18px;
-        font-size: 15px;
-        font-weight: 700;
-        color: #1f2b27;
-    }
-    QGroupBox::title {
-        subcontrol-origin: margin;
-        left: 16px;
-        padding: 0 8px;
-        background: #ffffff;
-    }
-"""
-
-INPUT_STYLE = """
-    QLineEdit, QSpinBox, QComboBox {
-        min-height: 30px;
-        padding: 4px 9px;
-        border: 1px solid #cfd8d3;
-        border-radius: 8px;
-        background: #fbfcfa;
-        color: #1f2b27;
-    }
-    QLineEdit:focus, QSpinBox:focus, QComboBox:focus {
-        border: 1px solid #2f7d68;
-        background: #ffffff;
-    }
-"""
-
-CHECK_STYLE = """
-    QCheckBox, QRadioButton {
-        spacing: 8px;
-        color: #2c3935;
-        font-size: 13px;
-    }
-"""
-
-PRIMARY_BUTTON_STYLE = """
-    QPushButton {
-        background: #2f7d68;
-        color: #ffffff;
-        border: none;
-        padding: 9px 22px;
-        border-radius: 8px;
-        font-weight: 700;
-    }
-    QPushButton:hover {
-        background: #256a58;
-    }
-"""
-
-SECONDARY_BUTTON_STYLE = """
-    QPushButton {
-        background: #ffffff;
-        color: #2f7d68;
-        border: 1px solid #b8c8c1;
-        padding: 7px 14px;
-        border-radius: 8px;
-        font-weight: 600;
-    }
-    QPushButton:hover {
-        background: #edf5f1;
-        border-color: #2f7d68;
-    }
-"""
 
 
 class PetConfigPage(QWidget):
@@ -120,7 +53,7 @@ class PetConfigPage(QWidget):
     def setup_ui(self):
         """Setup UI layout."""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setContentsMargins(28, 24, 28, 22)
         layout.setSpacing(15)
 
         # Header with back button
@@ -131,7 +64,7 @@ class PetConfigPage(QWidget):
         header.addWidget(self.back_btn)
 
         self.title_label = QLabel("配置: 默认桌宠")
-        self.title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #333;")
+        self.title_label.setStyleSheet(title_style(FONT_SIZE_TITLE))
         header.addWidget(self.title_label, 1)
 
         layout.addLayout(header)
@@ -232,7 +165,7 @@ class PetConfigPage(QWidget):
 
         self.speed_spin = QSpinBox()
         self.speed_spin.setRange(1, 20)
-        self.speed_spin.setSuffix(" 像素/帧")
+        self.speed_spin.setSuffix(" 级")
         motion_layout.addRow("运动速度", self.speed_spin)
 
         scroll_layout.addWidget(motion_group)
@@ -275,7 +208,7 @@ class PetConfigPage(QWidget):
         appearance_layout.addRow("", flying_btn)
 
         self.walk_left_label = QLabel("未设置")
-        self.walk_left_label.setStyleSheet("color: #666;")
+        self.walk_left_label.setStyleSheet(subtitle_style())
         self.walk_left_btn = QPushButton("设置")
         self.walk_left_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
         self.walk_left_btn.clicked.connect(lambda: self.select_walk_animation('left'))
@@ -283,7 +216,7 @@ class PetConfigPage(QWidget):
         appearance_layout.addRow("", self.walk_left_btn)
 
         self.walk_right_label = QLabel("未设置")
-        self.walk_right_label.setStyleSheet("color: #666;")
+        self.walk_right_label.setStyleSheet(subtitle_style())
         self.walk_right_btn = QPushButton("设置")
         self.walk_right_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
         self.walk_right_btn.clicked.connect(lambda: self.select_walk_animation('right'))

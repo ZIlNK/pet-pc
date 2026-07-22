@@ -14,6 +14,10 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap
 
 from ..utils import get_pets_path
+from ..ui_style import (
+    PAGE_STYLE, PRIMARY_BUTTON_STYLE, SECONDARY_BUTTON_STYLE,
+    DARK, TEXT_HEADING, title_style, subtitle_style, form_stylesheet,
+)
 
 
 class NewPetDialog(QDialog):
@@ -31,13 +35,14 @@ class NewPetDialog(QDialog):
 
     def setup_ui(self):
         """Setup UI layout."""
+        self.setStyleSheet(PAGE_STYLE + form_stylesheet())
         layout = QVBoxLayout(self)
         layout.setSpacing(15)
         layout.setContentsMargins(20, 20, 20, 20)
 
         # Title
         title = QLabel("新建桌宠")
-        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #333;")
+        title.setStyleSheet(title_style(16))
         layout.addWidget(title)
 
         layout.addSpacing(10)
@@ -49,33 +54,11 @@ class NewPetDialog(QDialog):
         # Pet name
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText("请输入桌宠名称")
-        self.name_edit.setStyleSheet("""
-            QLineEdit {
-                padding: 8px;
-                border: 1px solid #ddd;
-                border-radius: 4px;
-                font-size: 13px;
-            }
-            QLineEdit:focus {
-                border-color: #0078d4;
-            }
-        """)
         form_layout.addRow("桌宠名称 *", self.name_edit)
 
         # Author
         self.author_edit = QLineEdit()
         self.author_edit.setPlaceholderText("（可选）")
-        self.author_edit.setStyleSheet("""
-            QLineEdit {
-                padding: 8px;
-                border: 1px solid #ddd;
-                border-radius: 4px;
-                font-size: 13px;
-            }
-            QLineEdit:focus {
-                border-color: #0078d4;
-            }
-        """)
         form_layout.addRow("作者", self.author_edit)
 
         layout.addLayout(form_layout)
@@ -86,27 +69,16 @@ class NewPetDialog(QDialog):
         image_layout.setContentsMargins(0, 0, 0, 0)
 
         image_label = QLabel("待机形象 *")
-        image_label.setStyleSheet("font-size: 13px; color: #333;")
+        image_label.setStyleSheet(f"font-size: 13px; color: {TEXT_HEADING};")
         image_layout.addWidget(image_label)
 
         image_btn_layout = QHBoxLayout()
         self.image_path_label = QLabel("未选择文件")
-        self.image_path_label.setStyleSheet("color: #666; font-size: 12px;")
+        self.image_path_label.setStyleSheet(subtitle_style())
         self.image_path_label.setWordWrap(True)
 
         select_btn = QPushButton("选择图片")
-        select_btn.setStyleSheet("""
-            QPushButton {
-                background: white;
-                color: #0078d4;
-                border: 1px solid #0078d4;
-                padding: 6px 12px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background: #e3f2fd;
-            }
-        """)
+        select_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
         select_btn.clicked.connect(self.select_image)
         image_btn_layout.addWidget(self.image_path_label, 1)
         image_btn_layout.addWidget(select_btn)
@@ -117,7 +89,9 @@ class NewPetDialog(QDialog):
         self.preview_label = QLabel("预览")
         self.preview_label.setFixedHeight(120)
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_label.setStyleSheet("background: #333; color: white; border-radius: 8px;")
+        self.preview_label.setStyleSheet(
+            f"background: {DARK}; color: #ffffff; border-radius: 8px;"
+        )
         image_layout.addWidget(self.preview_label)
 
         layout.addWidget(image_group)
@@ -130,36 +104,12 @@ class NewPetDialog(QDialog):
 
         create_btn = QPushButton("创建")
         create_btn.setDefault(True)
-        create_btn.setStyleSheet("""
-            QPushButton {
-                background: #0078d4;
-                color: white;
-                border: none;
-                padding: 8px 24px;
-                border-radius: 4px;
-                font-size: 13px;
-            }
-            QPushButton:hover {
-                background: #106ebe;
-            }
-        """)
+        create_btn.setStyleSheet(PRIMARY_BUTTON_STYLE)
         create_btn.clicked.connect(self.create_pet)
         btn_layout.addWidget(create_btn)
 
         cancel_btn = QPushButton("取消")
-        cancel_btn.setStyleSheet("""
-            QPushButton {
-                background: white;
-                color: #666;
-                border: 1px solid #ddd;
-                padding: 8px 24px;
-                border-radius: 4px;
-                font-size: 13px;
-            }
-            QPushButton:hover {
-                background: #f5f5f5;
-            }
-        """)
+        cancel_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(cancel_btn)
 

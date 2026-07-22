@@ -13,34 +13,11 @@ from .settings_pages import (
     PetListPage, PetConfigPage, GlobalSettingsPage,
     ActionControlPage, InstanceManagerPage,
 )
+from .ui_style import (
+    NAV_BUTTON_STYLE, BG, TEXT, DARK, BORDER, TEXT_ON_DARK_DIM,
+)
 
 logger = logging.getLogger(__name__)
-
-
-NAV_BUTTON_STYLE = """
-    QPushButton {
-        text-align: left;
-        padding: 11px 14px;
-        border: none;
-        background: transparent;
-        font-size: 14px;
-        color: #d9e1df;
-        border-radius: 8px;
-        font-weight: 500;
-    }
-    QPushButton:checked {
-        background: #f2c572;
-        color: #17201d;
-        font-weight: 700;
-    }
-    QPushButton:hover:!checked {
-        background: rgba(255,255,255,0.08);
-        color: #ffffff;
-    }
-    QPushButton:disabled {
-        color: rgba(217,225,223,0.35);
-    }
-"""
 
 
 class SettingsCenter(QDialog):
@@ -60,14 +37,14 @@ class SettingsCenter(QDialog):
 
         self.setWindowTitle("桌面宠物设置")
         self.setMinimumSize(980, 720)
-        self.setStyleSheet("""
-            QDialog {
-                background: #f5f7f4;
-                color: #24312d;
-            }
-            QStackedWidget {
-                background: #f5f7f4;
-            }
+        self.setStyleSheet(f"""
+            QDialog {{
+                background: {BG};
+                color: {TEXT};
+            }}
+            QStackedWidget {{
+                background: {BG};
+            }}
         """)
         self.setup_ui()
         self.connect_signals()
@@ -112,11 +89,11 @@ class SettingsCenter(QDialog):
         """Create left navigation panel."""
         nav_widget = QWidget()
         nav_widget.setFixedWidth(190)
-        nav_widget.setStyleSheet("""
-            QWidget {
-                background: #17201d;
-                border-right: 1px solid #dfe6e1;
-            }
+        nav_widget.setStyleSheet(f"""
+            QWidget {{
+                background: {DARK};
+                border-right: 1px solid {BORDER};
+            }}
         """)
         nav_layout = QVBoxLayout(nav_widget)
         nav_layout.setContentsMargins(16, 24, 16, 18)
@@ -127,7 +104,7 @@ class SettingsCenter(QDialog):
         title.setStyleSheet("font-size: 20px; font-weight: 800; color: #ffffff;")
         nav_layout.addWidget(title)
         subtitle = QLabel("设置中心")
-        subtitle.setStyleSheet("font-size: 12px; color: #9fb0aa;")
+        subtitle.setStyleSheet(f"font-size: 12px; color: {TEXT_ON_DARK_DIM};")
         nav_layout.addWidget(subtitle)
         nav_layout.addSpacing(22)
 

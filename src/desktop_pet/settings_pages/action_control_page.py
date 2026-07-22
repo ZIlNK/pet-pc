@@ -17,33 +17,12 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ..ui_style import (
+    PRIMARY_BUTTON_STYLE, SECONDARY_BUTTON_STYLE,
+    FONT_SIZE_TITLE, title_style, subtitle_style,
+)
+
 logger = logging.getLogger(__name__)
-
-PRIMARY_BUTTON_STYLE = """
-    QPushButton {
-        background: #2f7d68;
-        color: white;
-        border: none;
-        padding: 8px 16px;
-        border-radius: 4px;
-        font-weight: 600;
-    }
-    QPushButton:hover { background: #256a58; }
-"""
-
-SECONDARY_BUTTON_STYLE = """
-    QPushButton {
-        background: #ffffff;
-        color: #2f7d68;
-        border: 1px solid #b8c8c1;
-        padding: 6px 12px;
-        border-radius: 4px;
-    }
-    QPushButton:hover {
-        background: #edf5f1;
-        border-color: #2f7d68;
-    }
-"""
 
 
 class ActionControlPage(QWidget):
@@ -68,18 +47,18 @@ class ActionControlPage(QWidget):
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setContentsMargins(28, 24, 28, 22)
         layout.setSpacing(15)
 
         title = QLabel("动作配置")
-        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #333;")
+        title.setStyleSheet(title_style(FONT_SIZE_TITLE))
         layout.addWidget(title)
 
         self.actions_group = QGroupBox("实例动作配置")
         actions_layout = QVBoxLayout(self.actions_group)
 
         hint = QLabel("编辑当前实例的动作启用状态和权重；资源包文件不会被修改。")
-        hint.setStyleSheet("color: #66736e; font-size: 12px;")
+        hint.setStyleSheet(subtitle_style())
         hint.setWordWrap(True)
         actions_layout.addWidget(hint)
 

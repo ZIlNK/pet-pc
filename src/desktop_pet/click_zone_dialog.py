@@ -1,3 +1,5 @@
+import json
+
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QComboBox, QSpinBox, QFormLayout, QGroupBox,
@@ -7,6 +9,15 @@ from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal, QSize
 from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QBrush, QMovie
 
 from .config_manager import ClickZoneConfig
+from .ui_style import (
+    BG,
+    BORDER,
+    DANGER_BUTTON_STYLE,
+    INPUT_STYLE,
+    PRIMARY_BUTTON_STYLE,
+    SECONDARY_BUTTON_STYLE,
+    SECTION_STYLE,
+)
 
 
 class ClickZoneOverlay(QWidget):
@@ -387,6 +398,7 @@ class ClickZoneConfigDialog(QDialog):
         self.setWindowTitle("点击区域配置")
         self.setMinimumWidth(700)
         self.setMinimumHeight(500)
+        self.setStyleSheet(SECTION_STYLE + INPUT_STYLE)
 
         main_layout = QHBoxLayout(self)
 
@@ -395,7 +407,9 @@ class ClickZoneConfigDialog(QDialog):
 
         self.overlay = ClickZoneOverlay(zones=self.zones, image_size=self.image_size)
         self.overlay.zone_changed.connect(self.on_zone_changed)
-        self.overlay.setStyleSheet("border: 1px solid #ccc; background-color: #f0f0f0;")
+        self.overlay.setStyleSheet(
+            f"border: 1px solid {BORDER}; background-color: {BG};"
+        )
 
         overlay_container = QHBoxLayout()
         overlay_container.addStretch()
@@ -418,10 +432,12 @@ class ClickZoneConfigDialog(QDialog):
 
         list_btn_layout = QHBoxLayout()
         add_btn = QPushButton("添加区域")
+        add_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
         add_btn.clicked.connect(self.add_zone)
         list_btn_layout.addWidget(add_btn)
 
         delete_btn = QPushButton("删除区域")
+        delete_btn.setStyleSheet(DANGER_BUTTON_STYLE)
         delete_btn.clicked.connect(self.delete_zone)
         list_btn_layout.addWidget(delete_btn)
         right_layout.addLayout(list_btn_layout)
@@ -467,6 +483,12 @@ class ClickZoneConfigDialog(QDialog):
 
         btn_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btn_box.button(QDialogButtonBox.StandardButton.Ok).setStyleSheet(
+            PRIMARY_BUTTON_STYLE
+        )
+        btn_box.button(QDialogButtonBox.StandardButton.Cancel).setStyleSheet(
+            SECONDARY_BUTTON_STYLE
         )
         btn_box.accepted.connect(self.validate_and_accept)
         btn_box.rejected.connect(self.reject)

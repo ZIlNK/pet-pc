@@ -8,71 +8,21 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
+from ..ui_style import (
+    CARD_STYLE, PRIMARY_BUTTON_STYLE, SECONDARY_BUTTON_STYLE,
+    DANGER_BUTTON_STYLE, ACCENT, ACCENT_TEXT, title_style, subtitle_style,
+)
+
 logger = logging.getLogger(__name__)
 
 
-PRIMARY_TAG_STYLE = """
-    background: #f2c572;
-    color: #17201d;
+PRIMARY_TAG_STYLE = f"""
+    background: {ACCENT};
+    color: {ACCENT_TEXT};
     padding: 2px 8px;
     border-radius: 4px;
     font-size: 11px;
     font-weight: 700;
-"""
-
-CREATE_BUTTON_STYLE = """
-    QPushButton {
-        background: #2f7d68;
-        color: #ffffff;
-        border: none;
-        padding: 8px 18px;
-        border-radius: 8px;
-        font-weight: 700;
-    }
-    QPushButton:hover {
-        background: #256a58;
-    }
-    QPushButton:disabled {
-        background: #cfd8d3;
-        color: #f5f7f4;
-    }
-"""
-
-EDIT_BUTTON_STYLE = """
-    QPushButton {
-        background: #0078d4;
-        color: white;
-        border: none;
-        padding: 6px 12px;
-        border-radius: 4px;
-    }
-    QPushButton:hover {
-        background: #106ebe;
-    }
-"""
-
-CLOSE_BUTTON_STYLE = """
-    QPushButton {
-        background: #d9534f;
-        color: white;
-        border: none;
-        padding: 6px 12px;
-        border-radius: 4px;
-    }
-    QPushButton:hover {
-        background: #c9302c;
-    }
-"""
-
-CARD_STYLE = """
-    QFrame {
-        background: #ffffff;
-        border: 1px solid #dfe6e1;
-        border-radius: 10px;
-    }
-    QFrame:hover {
-        border-color: #2f7d68;
-    }
 """
 
 
@@ -109,12 +59,12 @@ class InstanceManagerPage(QWidget):
         # 顶部标题与创建按钮
         header_layout = QHBoxLayout()
         title = QLabel("实例管理")
-        title.setStyleSheet("font-size: 24px; font-weight: 800; color: #17201d;")
+        title.setStyleSheet(title_style())
         header_layout.addWidget(title)
         header_layout.addStretch()
 
         self.create_btn = QPushButton("+ 创建新实例")
-        self.create_btn.setStyleSheet(CREATE_BUTTON_STYLE)
+        self.create_btn.setStyleSheet(PRIMARY_BUTTON_STYLE)
         self.create_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.create_btn.setEnabled(self.platform is not None)
         self.create_btn.clicked.connect(self._on_create_clicked)
@@ -123,7 +73,7 @@ class InstanceManagerPage(QWidget):
         layout.addLayout(header_layout)
 
         description = QLabel("管理当前运行中的桌宠实例，可编辑配置或关闭实例。")
-        description.setStyleSheet("font-size: 13px; color: #66736e;")
+        description.setStyleSheet(subtitle_style())
         layout.addWidget(description)
 
         # 实例计数标签
@@ -224,13 +174,13 @@ class InstanceManagerPage(QWidget):
         btn_layout.addStretch()
 
         edit_btn = QPushButton("编辑配置")
-        edit_btn.setStyleSheet(EDIT_BUTTON_STYLE)
+        edit_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
         edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         edit_btn.clicked.connect(lambda _, pid=config.pet_id: self._on_edit_clicked(pid))
         btn_layout.addWidget(edit_btn)
 
         close_btn = QPushButton("关闭此桌宠")
-        close_btn.setStyleSheet(CLOSE_BUTTON_STYLE)
+        close_btn.setStyleSheet(DANGER_BUTTON_STYLE)
         close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         close_btn.clicked.connect(lambda _, pid=config.pet_id: self._on_close_clicked(pid))
         btn_layout.addWidget(close_btn)
