@@ -61,8 +61,11 @@ pets/*
 checklist.md
 SPEC.md
 tasks.md
-CLAUDE.md
 pet-pc-api-review.md
 
-docs/
+docs/*
+!docs/openclaw-integration.md
+!docs/openclaw-architecture.md
+!docs/openclaw-runbook.md
+!docs/CHANGES.md
 .claude/

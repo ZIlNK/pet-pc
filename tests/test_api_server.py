@@ -893,7 +893,7 @@ def test_get_llm_config_no_config_returns_empty():
 # ---------------------------------------------------------------------------
 # OpenClaw http-channel 接收端测试
 # ---------------------------------------------------------------------------
-async def test_openclaw_reply_uses_primary_alias():
+async def test_openclaw_reply_without_to_falls_back_to_primary():
     platform = make_single_pet_platform()
     server = ApiServer(platform)
     client = await _make_client(server)
@@ -901,9 +901,8 @@ async def test_openclaw_reply_uses_primary_alias():
         resp = await client.post(
             "/api/openclaw/reply",
             json={
-                "channel": "http-channel",
+                "channel": "pet-bubble",
                 "accountId": "default",
-                "to": "boss",
                 "text": "hello",
                 "timestamp": 1751487600000,
             },
@@ -918,7 +917,7 @@ async def test_openclaw_reply_uses_primary_alias():
         await client.close()
 
 async def test_openclaw_reply_platform_routes_by_to():
-    """多宠物模式 to 字段是 peer 名（非 pet_id），始终路由到主实例。"""
+    """A non-empty to value is the exact target pet_id."""
     p = MockPlatform()
     p.add_instance("primary1", primary=True)
     p.add_instance("petB")
@@ -927,14 +926,58 @@ async def test_openclaw_reply_platform_routes_by_to():
     try:
         resp = await client.post(
             "/api/openclaw/reply",
-            json={"to": "boss", "text": "hi from agent"},
+            json={"to": "petB", "text": "hi from agent"},
         )
         assert resp.status == 200
-        # to 是 peer 名，不是 pet_id，始终路由到主实例
-        widget_a = p.get_pet_widget("primary1")
-        widget_a.show_chat_bubble_requested.emit.assert_called_once_with("hi from agent")
-        widget_b = p.get_pet_widget("petB")
-        widget_b.show_chat_bubble_requested.emit.assert_not_called()
+        p.get_pet_widget("primary1").show_chat_bubble_requested.emit.assert_not_called()
+        p.get_pet_widget("petB").show_chat_bubble_requested.emit.assert_called_once_with(
+            "hi from agent"
+        )
+    finally:
+        await client.close()
+
+
+async def test_openclaw_reply_unknown_to_returns_404_without_fallback():
+    p = make_single_pet_platform()
+    server = ApiServer(platform=p)
+    client = await _make_client(server)
+    try:
+        resp = await client.post(
+            "/api/openclaw/reply", json={"to": "missing", "text": "hello"}
+        )
+        assert resp.status == 404
+        p.get_pet_widget("primary1").show_chat_bubble_requested.emit.assert_not_called()
+    finally:
+        await client.close()
+
+async def test_openclaw_reply_empty_to_does_not_fall_back():
+    platform = make_single_pet_platform()
+    server = ApiServer(platform=platform)
+    client = await _make_client(server)
+    try:
+        resp = await client.post(
+            "/api/openclaw/reply", json={"to": "   ", "text": "hello"}
+        )
+        assert resp.status == 404
+        platform.get_pet_widget(
+            "primary1"
+        ).show_chat_bubble_requested.emit.assert_not_called()
+    finally:
+        await client.close()
+
+
+async def test_openclaw_reply_null_to_is_invalid():
+    platform = make_single_pet_platform()
+    server = ApiServer(platform=platform)
+    client = await _make_client(server)
+    try:
+        resp = await client.post(
+            "/api/openclaw/reply", json={"to": None, "text": "hello"}
+        )
+        assert resp.status == 400
+        platform.get_pet_widget(
+            "primary1"
+        ).show_chat_bubble_requested.emit.assert_not_called()
     finally:
         await client.close()
 
@@ -1003,7 +1046,7 @@ async def test_openclaw_reply_secret_token_correct_passes():
     try:
         resp = await client.post(
             "/api/openclaw/reply",
-            json={"to": "boss", "text": "hi"},
+            json={"text": "hi"},
             headers={"X-HTTP-Channel-Secret": "my-secret"},
         )
         assert resp.status == 200
@@ -1036,9 +1079,10 @@ async def test_forward_to_openclaw_new_format(monkeypatch):
         async def __aexit__(self, *a):
             return False
 
-        async def post(self, url, json=None):
+        async def post(self, url, json=None, headers=None):
             captured["url"] = url
             captured["body"] = json
+            captured["headers"] = headers
             return FakeResp()
 
     import sys
@@ -1173,3 +1217,241 @@ async def test_tools_call_maps_typed_errors(error, expected_status):
         assert data["error_type"] == type(error).__name__
     finally:
         await client.close()
+
+
+async def test_forward_to_openclaw_independent_agent_hook(monkeypatch, platform_with_two_pets):
+    captured = {}
+
+    class FakeResp:
+        status_code = 202
+        text = "accepted"
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            captured.update(url=url, body=json, headers=headers)
+            return FakeResp()
+
+    import sys
+    import types
+    fake_httpx = types.ModuleType("httpx")
+    fake_httpx.AsyncClient = FakeClient
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+    server = ApiServer(platform=platform_with_two_pets)
+    server.set_openclaw_config(
+        "", "", "callback-secret",
+        hooks_url="http://127.0.0.1:18789/hooks/agent",
+        hooks_token="hooks-token",
+    )
+    agent = {
+        "enabled": True,
+        "provider": "openclaw",
+        "agent_id": "healer-cat",
+        "session_key": "hook:pet:secondary2",
+        "reply_length": "short",
+        "initiative": "low",
+    }
+    await server._forward_to_openclaw("hello", "ignored", "secondary2", agent)
+
+    assert captured["url"].endswith("/hooks/agent")
+    assert captured["headers"]["Authorization"] == "Bearer hooks-token"
+    assert captured["body"]["agentId"] == "healer-cat"
+    assert captured["body"]["sessionKey"] == "hook:pet:secondary2"
+    assert captured["body"]["channel"] == "pet-bubble"
+    assert captured["body"]["to"] == "secondary2"
+    runtime_message = captured["body"]["message"]
+    assert "exactly one final JSON object" in runtime_message
+    assert '"duration":15000' in runtime_message
+    assert "do not call respond_as_pet" in runtime_message
+    assert "do not include pet_id" in runtime_message.lower()
+    assert "any desktop-pet MCP tool" in runtime_message
+
+
+async def test_forward_to_openclaw_independent_agent_channel(
+    monkeypatch, platform_with_two_pets
+):
+    captured = {"calls": 0}
+
+    class FakeResp:
+        status_code = 202
+        text = "accepted"
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            captured["calls"] += 1
+            captured.update(url=url, body=json, headers=headers)
+            return FakeResp()
+
+    import sys
+    import types
+    fake_httpx = types.ModuleType("httpx")
+    fake_httpx.AsyncClient = FakeClient
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+    server = ApiServer(platform=platform_with_two_pets)
+    server.set_openclaw_config(
+        "",
+        "",
+        "channel-secret",
+        hooks_url="http://127.0.0.1:18789/hooks/agent",
+        hooks_token="hooks-token",
+        channel_url="http://127.0.0.1:18789/pet-bubble-webhook",
+        agent_transport="channel",
+    )
+    agent = {
+        "enabled": True,
+        "provider": "openclaw",
+        "agent_id": "healer-cat",
+        "session_key": "hook:pet:secondary2",
+        "reply_length": "short",
+        "initiative": "high",
+    }
+    await server._forward_to_openclaw(
+        "hello", "2026-07-24T12:30:25", "secondary2", agent
+    )
+
+    assert captured["calls"] == 1
+    assert captured["url"].endswith("/pet-bubble-webhook")
+    assert captured["headers"] == {
+        "Content-Type": "application/json",
+        "X-Pet-Bubble-Secret": "channel-secret",
+    }
+    assert captured["body"] == {
+        "from": "secondary2",
+        "agentId": "healer-cat",
+        "text": "hello",
+        "chatType": "direct",
+        "timestamp": "2026-07-24T12:30:25",
+        "runtime": {"replyLength": "short", "initiative": "high"},
+    }
+    assert "sessionKey" not in captured["body"]
+    assert "Authorization" not in captured["headers"]
+
+
+def test_add_user_message_records_pet_and_agent(platform_with_two_pets):
+    config = platform_with_two_pets.get_instance_config("secondary2")
+    config.agent = {"enabled": True, "agent_id": "healer-cat"}
+    server = ApiServer(platform=platform_with_two_pets)
+
+    server.add_user_message("hello", pet_id="secondary2")
+
+    queued = server._user_messages[-1]
+    assert queued["text"] == "hello"
+    assert queued["pet_id"] == "secondary2"
+    assert queued["agent_id"] == "healer-cat"
+
+
+async def test_respond_as_pet_plays_animation_and_shows_text(
+    mock_run_in_main_thread, platform_with_two_pets
+):
+    server = ApiServer(platform=platform_with_two_pets)
+    result = await server._tool_respond_as_pet({
+        "pet_id": "secondary2", "text": " good job ", "animation": "sit"
+    })
+
+    assert result == {
+        "success": True,
+        "data": {
+            "pet_id": "secondary2",
+            "text": "good job",
+            "duration": 15000,
+            "requested_animation": "sit",
+            "played_animation": "sit",
+            "fallback": None,
+        },
+    }
+    widget = platform_with_two_pets.get_pet_widget("secondary2")
+    widget.show_custom_bubble_requested.emit.assert_called_once_with("good job", 15000)
+
+
+async def test_respond_as_pet_missing_animation_falls_back_to_text(
+    mock_run_in_main_thread, platform_with_two_pets
+):
+    server = ApiServer(platform=platform_with_two_pets)
+    result = await server._tool_respond_as_pet({
+        "pet_id": "secondary2",
+        "text": "hello",
+        "animation": "missing",
+        "duration": 0,
+    })
+
+    assert result["success"] is True
+    assert result["data"]["played_animation"] is None
+    assert result["data"]["fallback"] == "text_only"
+    platform_with_two_pets.get_pet_widget(
+        "secondary2"
+    ).show_custom_bubble_requested.emit.assert_called_once_with("hello", 0)
+
+
+@pytest.mark.parametrize(
+    "args,error",
+    [
+        ({"pet_id": "missing", "text": "hello"}, "not found"),
+        ({"pet_id": "secondary2", "text": "   "}, "text"),
+        ({"pet_id": "secondary2", "text": "hello", "duration": -1}, "duration"),
+        ({"pet_id": "secondary2", "text": "hello", "duration": True}, "duration"),
+    ],
+)
+async def test_respond_as_pet_rejects_invalid_arguments(
+    mock_run_in_main_thread, platform_with_two_pets, args, error
+):
+    result = await ApiServer(platform=platform_with_two_pets)._tool_respond_as_pet(args)
+    assert result["success"] is False
+    assert error in result["error"]
+
+
+def test_tools_expose_respond_as_pet(platform_with_two_pets):
+    tools = ApiServer(platform=platform_with_two_pets)._build_tools()
+    definition = next(
+        item["function"] for item in tools
+        if item["function"]["name"] == "respond_as_pet"
+    )
+    assert definition["parameters"]["required"] == ["pet_id", "text"]
+    assert definition["parameters"]["properties"]["duration"]["default"] == 15000
+
+
+async def test_openclaw_reply_suppresses_recent_respond_as_pet_duplicate(
+    mock_run_in_main_thread, platform_with_two_pets
+):
+    server = ApiServer(platform=platform_with_two_pets)
+    await server._tool_respond_as_pet({"pet_id": "secondary2", "text": "same reply"})
+    widget = platform_with_two_pets.get_pet_widget("secondary2")
+    client = await _make_client(server)
+    try:
+        resp = await client.post(
+            "/api/openclaw/reply", json={"to": "secondary2", "text": "same   reply"}
+        )
+        assert resp.status == 200
+        assert await resp.json() == {"received": True, "suppressed": True}
+        widget.show_chat_bubble_requested.emit.assert_not_called()
+    finally:
+        await client.close()
+
+
+async def test_openclaw_reply_fingerprint_expires(monkeypatch, platform_with_two_pets):
+    server = ApiServer(platform=platform_with_two_pets)
+    current_time = [10.0]
+    monkeypatch.setattr(
+        "desktop_pet.api_server.time.monotonic", lambda: current_time[0]
+    )
+    server._record_response_fingerprint("secondary2", "reply")
+    current_time[0] = 21.0
+    assert server._consume_response_fingerprint("secondary2", "reply") is False

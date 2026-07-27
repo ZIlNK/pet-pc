@@ -1,7 +1,7 @@
 {
   "id": "pet-bubble",
   "name": "Desktop Pet Bubble",
-  "description": "Local channel that receives desktop pet chat bubble messages via HTTP webhook",
+  "description": "Local channel that routes OpenClaw Agent replies to desktop pet instances",
   "kind": "channel",
   "activation": {
     "onStartup": true
@@ -32,11 +32,25 @@
             "type": "integer",
             "default": 0
           },
+          "desktopApiBase": {
+            "type": "string",
+            "default": "http://127.0.0.1:8080/api"
+          },
+          "sharedSecret": {
+            "type": "string",
+            "default": ""
+          },
           "autoReply": {
             "type": "boolean",
             "default": true,
-            "description": "Echo back AI replies to the pet GUI via MCP show_message"
+            "description": "Deliver Agent replies to the Desktop Pet API"
           }
+        }
+      },
+      "uiHints": {
+        "sharedSecret": {
+          "sensitive": true,
+          "label": "Shared secret"
         }
       }
     }

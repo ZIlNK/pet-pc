@@ -443,6 +443,10 @@ def _run_gui(args: argparse.Namespace) -> None:
         mcp_config.get("openclaw_webhook_url", ""),
         mcp_config.get("openclaw_peer", ""),
         mcp_config.get("openclaw_secret_token", ""),
+        mcp_config.get("openclaw_hooks_url", ""),
+        mcp_config.get("openclaw_hooks_token", ""),
+        mcp_config.get("openclaw_channel_url", ""),
+        mcp_config.get("openclaw_agent_transport", "hooks"),
     )
     platform.api_server = api_server
     if api_config.get("enabled", False) and not api_server.start_background():

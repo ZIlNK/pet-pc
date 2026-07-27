@@ -172,6 +172,29 @@ class GlobalSettingsPage(QWidget):
         self.mcp_enabled_cb = QCheckBox("启用 MCP 服务")
         mcp_layout.addRow("", self.mcp_enabled_cb)
 
+        self.openclaw_agent_transport_combo = QComboBox()
+        self.openclaw_agent_transport_combo.addItem("Hooks（兼容模式）", "hooks")
+        self.openclaw_agent_transport_combo.addItem("Pet Bubble Channel", "channel")
+        mcp_layout.addRow("独立 Agent 传输", self.openclaw_agent_transport_combo)
+
+        self.openclaw_channel_url_edit = QLineEdit()
+        self.openclaw_channel_url_edit.setPlaceholderText(
+            "http://127.0.0.1:18789/pet-bubble-webhook"
+        )
+        mcp_layout.addRow("Pet Bubble Channel URL", self.openclaw_channel_url_edit)
+
+        self.openclaw_hooks_url_edit = QLineEdit()
+        self.openclaw_hooks_url_edit.setPlaceholderText("http://127.0.0.1:18789/hooks/agent")
+        mcp_layout.addRow("OpenClaw Hooks URL", self.openclaw_hooks_url_edit)
+
+        self.openclaw_hooks_token_edit = QLineEdit()
+        self.openclaw_hooks_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        mcp_layout.addRow("Hooks Bearer Token", self.openclaw_hooks_token_edit)
+
+        self.openclaw_secret_token_edit = QLineEdit()
+        self.openclaw_secret_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        mcp_layout.addRow("OpenClaw callback secret", self.openclaw_secret_token_edit)
+
         scroll_layout.addWidget(mcp_group)
 
         scroll.setWidget(scroll_content)
@@ -186,6 +209,8 @@ class GlobalSettingsPage(QWidget):
             self.cross_screen_walk_prob_spin,
             self.llm_api_key_edit, self.llm_base_url_edit,
             self.llm_model_edit, self.llm_max_history_spin,
+            self.openclaw_hooks_url_edit, self.openclaw_hooks_token_edit,
+            self.openclaw_secret_token_edit,
         ):
             field.setStyleSheet(INPUT_STYLE)
 
@@ -292,6 +317,22 @@ class GlobalSettingsPage(QWidget):
         # MCP
         mcp_config = self._get_mcp_config()
         self.mcp_enabled_cb.setChecked(bool(mcp_config.get("enabled", False)))
+        transport = mcp_config.get("openclaw_agent_transport", "hooks")
+        transport_index = self.openclaw_agent_transport_combo.findData(transport)
+        self.openclaw_agent_transport_combo.setCurrentIndex(
+            transport_index if transport_index >= 0 else 0
+        )
+        self.openclaw_channel_url_edit.setText(
+            mcp_config.get(
+                "openclaw_channel_url",
+                "http://127.0.0.1:18789/pet-bubble-webhook",
+            )
+        )
+        self.openclaw_hooks_url_edit.setText(
+            mcp_config.get("openclaw_hooks_url", "http://127.0.0.1:18789/hooks/agent")
+        )
+        self.openclaw_hooks_token_edit.setText(mcp_config.get("openclaw_hooks_token", ""))
+        self.openclaw_secret_token_edit.setText(mcp_config.get("openclaw_secret_token", ""))
 
     # ------------------------------------------------------------------
     # 配置访问辅助
@@ -423,6 +464,15 @@ class GlobalSettingsPage(QWidget):
                 },
                 "mcp": {
                     "enabled": self.mcp_enabled_cb.isChecked(),
+                    "openclaw_agent_transport": (
+                        self.openclaw_agent_transport_combo.currentData() or "hooks"
+                    ),
+                    "openclaw_channel_url": self.openclaw_channel_url_edit.text().strip()
+                    or "http://127.0.0.1:18789/pet-bubble-webhook",
+                    "openclaw_hooks_url": self.openclaw_hooks_url_edit.text().strip()
+                    or "http://127.0.0.1:18789/hooks/agent",
+                    "openclaw_hooks_token": self.openclaw_hooks_token_edit.text(),
+                    "openclaw_secret_token": self.openclaw_secret_token_edit.text(),
                 },
             }
 
@@ -440,6 +490,16 @@ class GlobalSettingsPage(QWidget):
                 api_server.set_allowed_ips(ip_list)
                 api_server.set_trust_proxy_headers(
                     bool(old_api.get("trust_proxy_headers", False))
+                )
+                current_mcp = self._get_mcp_config()
+                api_server.set_openclaw_config(
+                    current_mcp.get("openclaw_webhook_url", ""),
+                    current_mcp.get("openclaw_peer", ""),
+                    self.openclaw_secret_token_edit.text(),
+                    self.openclaw_hooks_url_edit.text().strip(),
+                    self.openclaw_hooks_token_edit.text(),
+                    self.openclaw_channel_url_edit.text().strip(),
+                    self.openclaw_agent_transport_combo.currentData() or "hooks",
                 )
                 if endpoint_changed and was_running:
                     if not api_server.stop_background():

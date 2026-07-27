@@ -83,7 +83,7 @@ uv run python scripts/green_screen_to_Webp.py input.mp4 -o output.gif --width 20
 
 - **`PetPlatform`** (`pet_platform.py`): 多桌宠平台顶层容器。管理实例的创建、销毁、列举、持久化。持有共享组件（`ApiServer` / `SystemTray` / `ScreenManager` / `GlobalConfigManager`），并提供 widget 工厂注入点。负责从旧版 `user_config.json` 的 `app.current_pet` 向 `instances.json` 的向后兼容迁移。
 
-- **`PetInstanceConfig`** (`pet_instance.py`): 单个桌宠实例的配置数据模型。包含 `pet_id` / `package` / `position` / `size` / `actions` / `rest_reminder` / `movement` / `behavior` / `motion_mode` / `click_detection` 等独立配置。支持从 `PetPackage` 默认值构建、序列化为 dict / 从 dict 反序列化、生成短 UUID 形式的 `pet_id`。
+- **`PetInstanceConfig`** (`pet_instance.py`): 单个桌宠实例的配置数据模型。包含 `pet_id` / `package` / `position` / `size` / `actions` / `rest_reminder` / `movement` / `behavior` / `motion_mode` / `click_detection` / `agent` 等独立配置。支持从 `PetPackage` 默认值构建、序列化为 dict / 从 dict 反序列化、生成短 UUID 形式的 `pet_id`。
 
 - **`InstancesStore`** (`instances_store.py`): 实例配置持久化。读写 `config/instances.json`，提供 CRUD 接口。文件不存在或损坏时返回空列表，不抛异常。
 
@@ -101,9 +101,11 @@ uv run python scripts/green_screen_to_Webp.py input.mp4 -o output.gif --width 20
 
 - **`MotionModeController`** (`motion_controller.py`): PyQt signal-based controller for API-driven pet control. Emits signals that `DesktopPet` connects to for movement/animation actions.
 
-- **`ApiServer`** (`api_server.py`): aiohttp-based HTTP server for remote control. Runs in a separate thread with its own asyncio event loop. Supports IP whitelist and CORS. **多宠物路由**：支持 `/api/pets/<pet_id>/...` 路径前缀按实例寻址，以及 `/api/instances` 实例管理端点（CRUD）。原有 `/api/move` 等无 `pet_id` 端点保留，未指定时作用于主实例（向后兼容）。Includes AI tool-calling endpoints (`/api/tools`, `/api/tools/call`) and message interaction endpoints (`/api/message`, `/api/messages/pending`, `/api/chat_bubble/show`, `/api/chat_bubble/hide`).
+- **`ApiServer`** (`api_server.py`): aiohttp-based HTTP server for remote control. Runs in a separate thread with its own asyncio event loop. Supports IP whitelist and CORS. **多宠物路由**：支持 `/api/pets/<pet_id>/...` 路径前缀按实例寻址，以及 `/api/instances` 实例管理端点（CRUD）。原有 `/api/move` 等无 `pet_id` 端点保留，未指定时作用于主实例（向后兼容）。Includes AI tool-calling endpoints, per-pet `respond`, OpenClaw Channel/Hook forwarding, and authenticated OpenClaw reply callbacks.
 
-- **`MCP Server`** (`mcp_server.py`): MCP (Model Context Protocol) server for AI agent integration (e.g., OpenClaw). Runs as a separate process in stdio mode. Dynamically discovers tools from the pet API (`/api/tools`), so new API tools are automatically available without MCP code changes.
+- **`pet-bubble` OpenClaw plugin** (`openclaw-plugins/pet-bubble/`): Recommended independent-Agent chat transport. Resolves exact bindings into persistent sessions, parses one structured final reply, calls the target pet `/respond` endpoint, and manages a controlled `MEMORY.md` region.
+
+- **`MCP Server`** (`mcp_server.py`): Optional stdio integration for general pet-control tools. It is not part of the normal OpenClaw chat/reply path.
 
 ### Key Patterns
 
@@ -115,9 +117,11 @@ uv run python scripts/green_screen_to_Webp.py input.mp4 -o output.gif --width 20
 
 4. **Async API Server**: The HTTP server runs in a daemon thread with its own event loop. Start/stop methods manage the server lifecycle.
 
-5. **Dynamic MCP Tool Discovery**: The MCP Server fetches tool definitions from `/api/tools` at runtime (30s cache), so adding new tools to `ApiServer._build_tools()` automatically exposes them to AI agents without modifying `mcp_server.py`.
+5. **Persistent OpenClaw Channel**: Normal independent-Agent chat uses exact `pet-bubble` bindings and `per-channel-peer` sessions. The Agent emits one final `{text, animation, duration}` object; no Desktop Pet MCP call is required.
 
-6. **Thread-Safe UI Updates from API**: Use `QTimer.singleShot(0, lambda: ...)` to schedule UI operations on the main thread from async API handlers. Do NOT use `QMetaObject.invokeMethod` — Python methods are not registered in Qt's meta-object system.
+6. **Dynamic MCP Tool Discovery**: The optional MCP Server fetches tool definitions from `/api/tools` at runtime (30s cache).
+
+7. **Thread-Safe UI Updates from API**: Use `QTimer.singleShot(0, lambda: ...)` to schedule UI operations on the main thread from async API handlers. Do NOT use `QMetaObject.invokeMethod` — Python methods are not registered in Qt's meta-object system.
 
 ### State Flow
 
@@ -154,6 +158,8 @@ Destroy Instance:
 - `pets/{pet_name}/animations/`: Animation files (GIF, WebP, PNG, APNG)
 - `src/desktop_pet/pet_platform.py`: 平台核心类 `PetPlatform`，多实例生命周期管理入口
 - `src/desktop_pet/pet_instance.py`: 实例配置数据模型 `PetInstanceConfig` 与 `generate_pet_id`
+- `openclaw-plugins/pet-bubble/`: OpenClaw 持久化 Channel、结构化出站和受控记忆
+- `docs/openclaw-integration.md`: OpenClaw 新部署接入步骤；架构和排障见同目录配套文档
 - `src/desktop_pet/instances_store.py`: 实例配置存储 `InstancesStore`，CRUD 与持久化
 - `src/desktop_pet/ui_style.py`: 共享 UI 设计系统。集中管理颜色/字体/圆角 tokens（深绿 `#2f7d68` + 琥珀 `#f2c572` 体系）、共用 QSS（按钮/输入/卡片/导航/菜单/滚动条等）与视觉效果辅助（`apply_shadow` / `fade_in` / `fade_out` / `global_app_stylesheet`）。**所有 UI 文件必须从这里取样式，禁止新增硬编码颜色/样式字符串**
 
@@ -209,50 +215,25 @@ Default port: 8080. IP whitelist defaults to localhost only.
 | `/api/pets/<pet_id>/chat_bubble/hide` | POST | 隐藏指定实例聊天气泡 |
 | `/api/pets/<pet_id>/message` | POST | 指定实例显示文字气泡 `{"text": "...", "duration": 0}` |
 | `/api/pets/<pet_id>/message/hide` | POST | 隐藏指定实例文字气泡 |
+| `/api/pets/<pet_id>/respond` | POST | 原子显示文字并可选播放动画 |
+| `/api/openclaw/reply` | POST | OpenClaw 旧出站适配器兼容回调，优先按 `to` 投递 |
 
-## MCP Server
+## OpenClaw Integration and Optional MCP
 
-The MCP Server allows AI agents (OpenClaw, Claude Desktop, etc.) to control the pet via MCP protocol.
+- **Primary chat path**: Desktop Pet → authenticated `/pet-bubble-webhook` → exact OpenClaw binding → persistent `per-channel-peer` session → one final `{text, animation, duration}` object → `/api/pets/<pet_id>/respond`.
+- **Routing authority**: OpenClaw `bindings`; the client-provided Agent ID is only a mismatch check. Each independent pet must use a unique Agent.
+- **No MCP for normal chat**: do not configure or start `desktop-pet-mcp` for personality, context, memory, text, or animation replies.
+- **Compatibility only**: `/hooks/agent` and the legacy global webhook remain available for manual rollback; never auto-fallback from Channel to Hook.
+- **Managed memory**: the plugin may only edit the marked Desktop Pet region in the bound Agent's `MEMORY.md`.
+- Complete setup: [`docs/openclaw-integration.md`](docs/openclaw-integration.md); architecture: [`docs/openclaw-architecture.md`](docs/openclaw-architecture.md); operations: [`docs/openclaw-runbook.md`](docs/openclaw-runbook.md).
 
-- **工具列表自动扩展**：MCP Server 通过 `/api/tools` 动态发现工具（30s 缓存），新增的 API 工具自动可用，无需修改 `mcp_server.py`
-- **多实例工具自动可用**：平台化后新增的 `list_pets` / `create_pet` / `remove_pet` / `get_pet_status` 工具会自动暴露给 AI agent
-- **`pet_id` 可选参数**：原有控制工具（如 `move_to` / `play_animation` 等）新增可选 `pet_id` 参数；未提供时作用于主实例（向后兼容）
-
-### Run MCP Server
+The optional MCP Server is only for generic status/movement/instance-management tools or non-OpenClaw clients:
 
 ```bash
 uv run desktop-pet-mcp
 ```
 
-### OpenClaw Configuration
-
-Add to `~/.openclaw/openclaw.json`:
-
-```json
-{
-  "mcpServers": {
-    "desktop-pet": {
-      "command": "uv",
-      "args": ["--directory", "D:\\code\\pet-pc", "run", "desktop-pet-mcp"]
-    }
-  }
-}
-```
-
-### Adding New Tools for AI Agents
-
-1. Add tool definition to `ApiServer._build_tools()` in `api_server.py`
-2. Add handler to `ApiServer._tool_handlers` and implement the handler method
-3. Done — MCP Server auto-discovers new tools via `/api/tools`
-
-平台化后已自动可用的实例管理工具：
-
-- `list_pets`：列出所有运行中实例
-- `create_pet`：创建新实例（指定 package / position 等）
-- `remove_pet`：销毁指定实例
-- `get_pet_status`：获取指定实例状态
-
-原有控制工具（`move_to` / `play_animation` / `walk` 等）新增可选 `pet_id` 参数，用于按实例寻址。
+OpenClaw uses the current `mcp.servers` schema if this optional server is configured. MCP dynamically discovers `/api/tools` with a 30-second cache; add definitions and handlers in `ApiServer`, not `mcp_server.py`.
 
 ## Dependencies
 
@@ -261,5 +242,5 @@ Add to `~/.openclaw/openclaw.json`:
 - Pillow (image processing)
 - aiohttp (HTTP API server)
 - mcp (MCP protocol server)
-- httpx (async HTTP client for MCP Server)
+- httpx (OpenClaw forwarding/memory client and optional MCP HTTP calls)
 - opencv-python, numpy (dev only - for green screen tools)

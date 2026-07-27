@@ -812,12 +812,22 @@ class DesktopPet(QWidget):
         self.bubble_label.move(x_pos, y_pos)
         self.bubble_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.bubble_label.show()
+        logger.info(
+            "[CustomBubble] Showing reply for pet=%s duration=%d text=%s",
+            self._instance_config.pet_id,
+            duration_ms,
+            text,
+        )
         if duration_ms > 0:
             QTimer.singleShot(duration_ms, self._hide_custom_bubble)
 
     def _hide_custom_bubble(self):
         """隐藏自定义气泡并恢复休息提醒气泡默认文案"""
         self.bubble_label.hide()
+        logger.info(
+            "[CustomBubble] Hidden reply for pet=%s",
+            self._instance_config.pet_id,
+        )
         self.bubble_label.setText("注意休息！\n点击开始倒计时")
 
     def show_chat_bubble(self, message: str = ""):
@@ -840,7 +850,9 @@ class DesktopPet(QWidget):
 
     def _on_chat_message_sent(self, text: str):
         """Forward a chat-bubble message to the platform API queue."""
-        self._platform.api_server.add_user_message(text)
+        self._platform.api_server.add_user_message(
+            text, pet_id=self._instance_config.pet_id
+        )
         logger.info("[ChatBubble] User sent message: %s", text)
     def _toggle_chat_bubble(self):
         """切换聊天气泡的显示/隐藏"""

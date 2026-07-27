@@ -20,6 +20,7 @@ import pytest
 from desktop_pet.instances_store import InstancesStoreError
 from desktop_pet.pet_instance import (
     InstanceConfigError,
+    InstanceConflictError,
     InstanceNotFoundError,
     PackageNotFoundError,
     PetInstanceConfig,
@@ -907,3 +908,36 @@ class TestPlatformTransactions:
         platform.system_tray.hide.assert_called_once()
         widget.close.assert_called_once()
         assert platform.list_pet_widgets() == {}
+
+
+class TestIndependentAgentBindings:
+    def test_enabled_agent_id_must_be_unique(
+        self, temp_config_dir: Path, patched_pet_loader
+    ):
+        platform = PetPlatform(config_dir=temp_config_dir)
+        first = platform.create_instance("default")
+        second = platform.create_instance("default")
+        platform.update_instance_config(first, {
+            "agent": {"enabled": True, "agent_id": "healer-cat"}
+        })
+
+        with pytest.raises(InstanceConflictError, match="already bound"):
+            platform.update_instance_config(second, {
+                "agent": {"enabled": True, "agent_id": "healer-cat"}
+            })
+
+    def test_disabled_bindings_may_share_agent_id(
+        self, temp_config_dir: Path, patched_pet_loader
+    ):
+        platform = PetPlatform(config_dir=temp_config_dir)
+        first = platform.create_instance("default")
+        second = platform.create_instance("default")
+
+        platform.update_instance_config(first, {
+            "agent": {"enabled": False, "agent_id": "healer-cat"}
+        })
+        updated = platform.update_instance_config(second, {
+            "agent": {"enabled": False, "agent_id": "healer-cat"}
+        })
+
+        assert updated.agent["agent_id"] == "healer-cat"

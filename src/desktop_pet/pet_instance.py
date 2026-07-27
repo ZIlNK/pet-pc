@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import math
+import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Mapping
@@ -14,6 +15,21 @@ _DEFAULT_MOVEMENT: dict[str, Any] = {"random_interval_min_ms": 3000, "random_int
 _DEFAULT_BEHAVIOR: dict[str, Any] = {"quiet_mode_enabled": False, "default_head_action": "head", "default_body_action": "body_tap"}
 _DEFAULT_MOTION_MODE: dict[str, Any] = {"enabled": True, "default_mode": "random", "movement_speed": 5, "animation_wait": True}
 _DEFAULT_CLICK_DETECTION: dict[str, Any] = {"enabled": False, "zones": []}
+_DEFAULT_AGENT: dict[str, Any] = {
+    "enabled": False,
+    "provider": "openclaw",
+    "agent_id": "",
+    "session_key": "",
+    "reply_length": "normal",
+    "initiative": "low",
+}
+_AGENT_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
+def _default_agent(pet_id: str) -> dict[str, Any]:
+    agent = copy.deepcopy(_DEFAULT_AGENT)
+    agent["session_key"] = f"hook:pet:{pet_id}"
+    return agent
 
 class InstanceConfigError(ValueError):
     pass
@@ -65,16 +81,18 @@ class PetInstanceConfig:
     behavior: dict = field(default_factory=dict)
     motion_mode: dict = field(default_factory=dict)
     click_detection: dict = field(default_factory=dict)
+    agent: dict = field(default_factory=dict)
 
     @classmethod
     def from_package_defaults(cls, pet_package: PetPackage, pet_id: str | None = None) -> "PetInstanceConfig":
-        return cls(pet_id=pet_id or generate_pet_id(pet_package.name), package=pet_package.name, actions={a.name: _action_to_dict(a) for a in pet_package.actions}, rest_reminder=copy.deepcopy(_DEFAULT_REST_REMINDER), movement=copy.deepcopy(_DEFAULT_MOVEMENT), behavior=copy.deepcopy(_DEFAULT_BEHAVIOR), motion_mode=copy.deepcopy(_DEFAULT_MOTION_MODE), click_detection=copy.deepcopy(_DEFAULT_CLICK_DETECTION))
+        instance_id = pet_id or generate_pet_id(pet_package.name)
+        return cls(pet_id=instance_id, package=pet_package.name, actions={a.name: _action_to_dict(a) for a in pet_package.actions}, rest_reminder=copy.deepcopy(_DEFAULT_REST_REMINDER), movement=copy.deepcopy(_DEFAULT_MOVEMENT), behavior=copy.deepcopy(_DEFAULT_BEHAVIOR), motion_mode=copy.deepcopy(_DEFAULT_MOTION_MODE), click_detection=copy.deepcopy(_DEFAULT_CLICK_DETECTION), agent=_default_agent(instance_id))
 
     def clone(self) -> "PetInstanceConfig":
         return PetInstanceConfig.from_dict(self.to_dict())
 
     def to_dict(self) -> dict[str, Any]:
-        return {"pet_id": self.pet_id, "package": self.package, "primary": self.primary, "position": copy.deepcopy(self.position), "screen_index": self.screen_index, "size": self.size, "actions": copy.deepcopy(self.actions), "rest_reminder": copy.deepcopy(self.rest_reminder), "movement": copy.deepcopy(self.movement), "behavior": copy.deepcopy(self.behavior), "motion_mode": copy.deepcopy(self.motion_mode), "click_detection": copy.deepcopy(self.click_detection)}
+        return {"pet_id": self.pet_id, "package": self.package, "primary": self.primary, "position": copy.deepcopy(self.position), "screen_index": self.screen_index, "size": self.size, "actions": copy.deepcopy(self.actions), "rest_reminder": copy.deepcopy(self.rest_reminder), "movement": copy.deepcopy(self.movement), "behavior": copy.deepcopy(self.behavior), "motion_mode": copy.deepcopy(self.motion_mode), "click_detection": copy.deepcopy(self.click_detection), "agent": copy.deepcopy(self.agent or _default_agent(self.pet_id))}
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "PetInstanceConfig":
@@ -105,6 +123,7 @@ class PetInstanceConfig:
             "behavior": _DEFAULT_BEHAVIOR,
             "motion_mode": _DEFAULT_MOTION_MODE,
             "click_detection": _DEFAULT_CLICK_DETECTION,
+            "agent": _default_agent(pet_id),
         }
         values: dict[str, dict[str, Any]] = {}
         for name, default in mapping_fields.items():
@@ -126,13 +145,14 @@ class PetInstanceConfig:
             behavior=values["behavior"],
             motion_mode=values["motion_mode"],
             click_detection=values["click_detection"],
+            agent=values["agent"],
         )
 
     @staticmethod
     def generate_pet_id(package: str = "") -> str:
         return generate_pet_id(package)
 
-_TOP_LEVEL_FIELDS = {"package", "primary", "position", "screen_index", "size", "actions", "rest_reminder", "movement", "behavior", "motion_mode", "click_detection"}
+_TOP_LEVEL_FIELDS = {"package", "primary", "position", "screen_index", "size", "actions", "rest_reminder", "movement", "behavior", "motion_mode", "click_detection", "agent"}
 _ACTION_FIELDS = {"enabled", "weight", "type", "description", "config", "animation_files", "zone_actions"}
 
 def _mapping(value: Any, name: str) -> dict[str, Any]:
@@ -173,6 +193,26 @@ def validate_instance_config(config: PetInstanceConfig, pet_package: PetPackage,
             raise InstanceConfigError("screen_index must be null or a non-negative integer")
         if screen_count is not None and config.screen_index >= screen_count:
             raise InstanceConfigError("screen_index is outside the available screen range")
+
+    agent = {**_default_agent(config.pet_id), **_mapping(config.agent, "agent")}
+    if set(agent) - set(_DEFAULT_AGENT):
+        raise InstanceConfigError("unknown agent fields")
+    agent["enabled"] = _boolean(agent["enabled"], "agent.enabled")
+    if agent["provider"] != "openclaw":
+        raise InstanceConfigError("agent.provider must be openclaw")
+    if not isinstance(agent["agent_id"], str):
+        raise InstanceConfigError("agent.agent_id must be a string")
+    agent["agent_id"] = agent["agent_id"].strip()
+    if agent["agent_id"] and not _AGENT_ID_PATTERN.fullmatch(agent["agent_id"]):
+        raise InstanceConfigError("agent.agent_id must be 1-64 letters, numbers, dots, underscores, or hyphens")
+    if agent["enabled"] and not agent["agent_id"]:
+        raise InstanceConfigError("agent.agent_id is required when independent AI is enabled")
+    if agent["reply_length"] not in {"short", "normal", "detailed"}:
+        raise InstanceConfigError("agent.reply_length must be short, normal, or detailed")
+    if agent["initiative"] not in {"low", "normal", "high"}:
+        raise InstanceConfigError("agent.initiative must be low, normal, or high")
+    agent["session_key"] = f"hook:pet:{config.pet_id}"
+    config.agent = agent
 
     rr = {**_DEFAULT_REST_REMINDER, **_mapping(config.rest_reminder, "rest_reminder")}
     if set(rr) - set(_DEFAULT_REST_REMINDER): raise InstanceConfigError("unknown rest_reminder fields")
@@ -247,7 +287,7 @@ def apply_instance_patch(current: PetInstanceConfig, updates: Mapping[str, Any],
     if unknown: raise InstanceConfigError(f"unknown instance fields: {', '.join(sorted(unknown))}")
     candidate = current.clone()
     for key, value in updates.items():
-        if key in {"position", "rest_reminder", "movement", "behavior", "motion_mode", "click_detection"}:
+        if key in {"position", "rest_reminder", "movement", "behavior", "motion_mode", "click_detection", "agent"}:
             value = {**copy.deepcopy(getattr(candidate, key)), **copy.deepcopy(_mapping(value, key))}
         elif key == "actions":
             patch = _mapping(value, key)

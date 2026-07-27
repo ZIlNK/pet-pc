@@ -13,6 +13,7 @@ from desktop_pet.pet_instance import (
     _DEFAULT_MOTION_MODE,
     _DEFAULT_MOVEMENT,
     _DEFAULT_REST_REMINDER,
+    validate_instance_config,
 )
 from desktop_pet.pet_loader import PetAction, PetMeta, PetPackage
 
@@ -108,6 +109,14 @@ def test_from_package_defaults_builds_config(sample_package: PetPackage):
     assert config.behavior == _DEFAULT_BEHAVIOR
     assert config.motion_mode == _DEFAULT_MOTION_MODE
     assert config.click_detection == _DEFAULT_CLICK_DETECTION
+    assert config.agent == {
+        "enabled": False,
+        "provider": "openclaw",
+        "agent_id": "",
+        "session_key": "hook:pet:abc12345",
+        "reply_length": "normal",
+        "initiative": "low",
+    }
 
 
 def test_from_package_defaults_auto_generates_pet_id(sample_package: PetPackage):
@@ -153,7 +162,7 @@ def test_to_dict_from_dict_round_trip(sample_package: PetPackage):
     assert set(serialized.keys()) == {
         "pet_id", "package", "primary", "position", "screen_index",
         "size", "actions", "rest_reminder", "movement", "behavior",
-        "motion_mode", "click_detection",
+        "motion_mode", "click_detection", "agent",
     }
 
     restored = PetInstanceConfig.from_dict(serialized)
@@ -170,6 +179,7 @@ def test_to_dict_from_dict_round_trip(sample_package: PetPackage):
     assert restored.behavior == original.behavior
     assert restored.motion_mode == original.motion_mode
     assert restored.click_detection == original.click_detection
+    assert restored.agent == original.agent
 
 
 def test_to_dict_is_json_serializable(sample_package: PetPackage):
@@ -321,3 +331,53 @@ def test_default_position_is_independent_per_instance():
 
     assert b.position["x"] == 100
     assert a.position is not b.position
+
+
+# ---------------------------------------------------------------------------
+# Independent OpenClaw Agent configuration
+# ---------------------------------------------------------------------------
+def test_from_dict_old_instance_gets_agent_defaults():
+    config = PetInstanceConfig.from_dict({"pet_id": "legacy01", "package": "default"})
+    assert config.agent["enabled"] is False
+    assert config.agent["session_key"] == "hook:pet:legacy01"
+
+
+def test_agent_round_trip_and_session_key_is_system_owned(sample_package: PetPackage):
+    config = PetInstanceConfig.from_package_defaults(sample_package, pet_id="agent001")
+    config.agent.update({
+        "enabled": True,
+        "agent_id": "healer-cat",
+        "session_key": "user-controlled",
+        "reply_length": "short",
+        "initiative": "high",
+    })
+
+    validated = validate_instance_config(config, sample_package)
+    restored = PetInstanceConfig.from_dict(validated.to_dict())
+
+    assert restored.agent == {
+        "enabled": True,
+        "provider": "openclaw",
+        "agent_id": "healer-cat",
+        "session_key": "hook:pet:agent001",
+        "reply_length": "short",
+        "initiative": "high",
+    }
+
+
+@pytest.mark.parametrize(
+    "agent,error",
+    [
+        ({"enabled": True, "agent_id": ""}, "required"),
+        ({"agent_id": "bad id"}, "agent_id"),
+        ({"agent_id": "x" * 65}, "agent_id"),
+        ({"provider": "other"}, "provider"),
+        ({"reply_length": "huge"}, "reply_length"),
+        ({"initiative": "always"}, "initiative"),
+    ],
+)
+def test_agent_validation_rejects_invalid_values(sample_package: PetPackage, agent, error):
+    config = PetInstanceConfig.from_package_defaults(sample_package, pet_id="agentbad")
+    config.agent.update(agent)
+    with pytest.raises(InstanceConfigError, match=error):
+        validate_instance_config(config, sample_package)

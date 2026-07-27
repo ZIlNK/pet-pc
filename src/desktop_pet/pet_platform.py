@@ -59,6 +59,7 @@ class PetPlatform:
                 validate_instance_config(
                     config, package, screen_count=self._screen_count()
                 )
+                self._validate_unique_agent(config, configs, exclude_pet_id=config.pet_id)
                 candidates.append(
                     (config.pet_id, self._build_widget(config, package))
                 )
@@ -159,6 +160,7 @@ class PetPlatform:
         existing = self.instances_store.list_instances()
         if any(item.pet_id == candidate.pet_id for item in existing):
             raise InstanceConflictError(f"instance already exists: {candidate.pet_id}")
+        self._validate_unique_agent(candidate, existing)
         candidate.primary = bool(candidate.primary or not existing)
         validate_instance_config(candidate, package, screen_count=self._screen_count())
         widget = self._build_widget(candidate, package)
@@ -222,6 +224,9 @@ class PetPlatform:
         if target_name != current.package:
             return self._switch_instance_package(current, package, updates)
         candidate = apply_instance_patch(current, updates, package, screen_count=self._screen_count())
+        self._validate_unique_agent(
+            candidate, self.instances_store.list_instances(), exclude_pet_id=pet_id
+        )
         if current.primary and not candidate.primary:
             raise InstanceConflictError("the current primary instance cannot be demoted directly")
         all_configs = self.instances_store.list_instances()
@@ -255,17 +260,20 @@ class PetPlatform:
         return self.instances_store.get_instance(pet_id) or candidate
 
     def _switch_instance_package(self, current: PetInstanceConfig, package: PetPackage, updates: dict) -> PetInstanceConfig:
-        allowed = {"package", "primary", "position", "screen_index", "size", "rest_reminder", "movement", "behavior", "motion_mode"}
+        allowed = {"package", "primary", "position", "screen_index", "size", "rest_reminder", "movement", "behavior", "motion_mode", "agent"}
         unknown = set(updates) - allowed
         if unknown:
             from .pet_instance import InstanceConfigError
             raise InstanceConfigError(f"package switch cannot update: {', '.join(sorted(unknown))}")
         candidate = PetInstanceConfig.from_package_defaults(package, pet_id=current.pet_id)
-        for field in ("primary", "position", "screen_index", "size", "rest_reminder", "movement", "behavior", "motion_mode"):
+        for field in ("primary", "position", "screen_index", "size", "rest_reminder", "movement", "behavior", "motion_mode", "agent"):
             setattr(candidate, field, copy.deepcopy(getattr(current, field)))
         candidate.click_detection = self._package_click_defaults(package)
         patch = {key: value for key, value in updates.items() if key != "package"}
         candidate = apply_instance_patch(candidate, patch, package, screen_count=self._screen_count())
+        self._validate_unique_agent(
+            candidate, self.instances_store.list_instances(), exclude_pet_id=current.pet_id
+        )
         if current.primary and not candidate.primary:
             raise InstanceConflictError("the current primary instance cannot be demoted directly")
         new_widget = self._build_widget(candidate, package)
@@ -284,6 +292,26 @@ class PetPlatform:
         if old_widget is not None: self._close_widget(old_widget)
         self._refresh_system_tray()
         return self.instances_store.get_instance(current.pet_id) or candidate
+
+    @staticmethod
+    def _validate_unique_agent(
+        candidate: PetInstanceConfig,
+        configs: list[PetInstanceConfig],
+        *,
+        exclude_pet_id: str | None = None,
+    ) -> None:
+        agent = candidate.agent or {}
+        if not agent.get("enabled"):
+            return
+        agent_id = agent.get("agent_id")
+        for item in configs:
+            if item.pet_id == exclude_pet_id:
+                continue
+            other = item.agent or {}
+            if other.get("enabled") and other.get("agent_id") == agent_id:
+                raise InstanceConflictError(
+                    f"OpenClaw agent is already bound to pet {item.pet_id}: {agent_id}"
+                )
 
     def persist_instance_position(self, pet_id: str, x: int, y: int) -> None:
         self.update_instance_config(pet_id, {"position": {"x": int(x), "y": int(y)}})

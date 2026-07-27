@@ -4,14 +4,14 @@
 
 **一个可爱、可扩展的多桌宠平台**
 
-让萌宠陪伴你的每一天，支持同时运行多个桌宠实例、自定义动画、休息提醒、HTTP API 远程控制
+让萌宠陪伴你的每一天，支持同时运行多个桌宠实例、自定义动画、休息提醒、HTTP API 远程控制和 OpenClaw 独立 Agent 对话
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![PyQt6](https://img.shields.io/badge/PyQt6-6.0+-green.svg)](https://www.riverbankcomputing.com/software/pyqt/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](https://github.com/yourusername/desktop-pet)
 
-[功能特性](#-功能特性) • [快速开始](#-快速开始) • [API 文档](#-http-api-远程控制) • [自定义](#-自定义配置) • [贡献指南](#-贡献指南)
+[功能特性](#-功能特性) • [快速开始](#-快速开始) • [OpenClaw](#-openclaw-智能桌宠) • [API 文档](#-http-api-远程控制) • [自定义](#-自定义配置) • [贡献指南](#-贡献指南)
 
 </div>
 
@@ -52,6 +52,7 @@
 | 📦 **资源包系统** | 支持加载不同的宠物资源包，轻松切换外观 |
 | 🎥 **绿幕转换工具** | 内置工具将绿幕视频转换为透明 GIF，方便制作动画 |
 | 👆 **点击检测** | 配置点击区域触发特定动画，增加交互性 |
+| 🤖 **OpenClaw Agent** | 每只桌宠可绑定独立 Agent，支持性格、持久上下文、长期记忆和动画回复 |
 
 ### 🎯 技术亮点
 
@@ -131,6 +132,21 @@ uv run python scripts/build.py --small
 
 ---
 
+## 🤖 OpenClaw 智能桌宠
+
+项目内置 `pet-bubble` OpenClaw Channel。每只桌宠可绑定一个独立 Agent，由 OpenClaw 管理性格、身份、会话上下文和 `MEMORY.md`，桌宠负责文字气泡与动画。
+
+当前推荐链路使用持久化 Channel 和结构化最终回复，**普通聊天不需要配置或启动 Desktop Pet MCP Server**。MCP 仅在 Agent 需要主动移动、查询状态或管理实例等通用工具时按需启用。
+
+- [完整接入步骤](docs/openclaw-integration.md)
+- [架构与安全边界](docs/openclaw-architecture.md)
+- [日志、时延与故障排查](docs/openclaw-runbook.md)
+- [OpenClaw 能力变更摘要](docs/CHANGES.md)
+
+不含真实密钥的 OpenClaw 合并示例见 [`openclaw-e2e.patch.json5`](openclaw-e2e.patch.json5)。
+
+---
+
 ## 🌐 HTTP API 远程控制
 
 Desktop Pet 提供完整的 HTTP API，支持远程控制宠物行为。
@@ -202,6 +218,8 @@ uv run desktop-pet bubble <pet_id> --hide                # 隐藏文字气泡
 | `POST` | `/api/pets/<pet_id>/animation` | 指定实例播放动画 | `{"name": "sit"}` |
 | `POST` | `/api/pets/<pet_id>/message` | 指定实例显示文字气泡 | `{"text": "你好", "duration": 0}` |
 | `POST` | `/api/pets/<pet_id>/message/hide` | 隐藏指定实例文字气泡 | - |
+| `POST` | `/api/pets/<pet_id>/respond` | 原子显示文字并可选播放动画 | `{"text":"你好","animation":"sit","duration":15000}` |
+| `POST` | `/api/openclaw/reply` | OpenClaw 旧出站适配器兼容回调 | `{"to":"<pet_id>","text":"你好"}` |
 
 ### 快速示例
 
@@ -384,6 +402,9 @@ desktop_pet/
 │       ├── meta.json        # 资源包元信息
 │       ├── config/          # 资源包配置
 │       └── animations/      # 动画文件
+├── openclaw-plugins/        # OpenClaw 本地插件
+│   └── pet-bubble/          # 持久化 Channel、出站回复和受控记忆
+├── docs/                    # 接入、架构、运维和设计文档
 ├── tests/                   # 测试套件（含 test_multi_pet_integration.py 集成测试）
 ├── scripts/                 # 辅助脚本
 │   ├── green_screen_to_webp_gui.py  # GUI 转换工具

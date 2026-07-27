@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import threading
+import time
 from collections import deque
 from datetime import datetime
 from typing import Optional
@@ -60,6 +61,8 @@ class _MainThreadInvoker(QObject):
 # 入站方向：Agent 回复由插件出站适配器 POST 到 /api/openclaw/reply 接收端。
 DEFAULT_OPENCLAW_WEBHOOK_URL = "http://127.0.0.1:18789/webhooks/http-channel"
 DEFAULT_OPENCLAW_PEER = "boss"
+DEFAULT_OPENCLAW_HOOKS_URL = "http://127.0.0.1:18789/hooks/agent"
+DEFAULT_OPENCLAW_CHANNEL_URL = "http://127.0.0.1:18789/pet-bubble-webhook"
 
 
 class ApiServer:
@@ -80,7 +83,12 @@ class ApiServer:
         self._user_messages: deque = deque(maxlen=100)
         self._openclaw_webhook_url = DEFAULT_OPENCLAW_WEBHOOK_URL
         self._openclaw_peer = DEFAULT_OPENCLAW_PEER
+        self._openclaw_hooks_url = DEFAULT_OPENCLAW_HOOKS_URL
+        self._openclaw_hooks_token: str = ""
+        self._openclaw_channel_url = DEFAULT_OPENCLAW_CHANNEL_URL
+        self._openclaw_agent_transport = "hooks"
         self._openclaw_secret_token: str = ""
+        self._response_fingerprints: dict[tuple[str, str], float] = {}
         self._openclaw_loop: Optional[asyncio.AbstractEventLoop] = None
         self._main_thread_invoker = _MainThreadInvoker()
         self._thread: Optional[threading.Thread] = None
@@ -155,13 +163,27 @@ class ApiServer:
     def get_allowed_ips(self) -> list[str]:
         return self._allowed_ips.copy()
 
-    def set_openclaw_config(self, webhook_url: str, peer: str, secret_token: str = "") -> None:
+    def set_openclaw_config(
+        self,
+        webhook_url: str,
+        peer: str,
+        secret_token: str = "",
+        hooks_url: str = "",
+        hooks_token: str = "",
+        channel_url: str = "",
+        agent_transport: str = "hooks",
+    ) -> None:
         if webhook_url:
             self._openclaw_webhook_url = webhook_url
         if peer:
             self._openclaw_peer = peer
-        if secret_token:
-            self._openclaw_secret_token = secret_token
+        self._openclaw_secret_token = secret_token or ""
+        self._openclaw_hooks_url = hooks_url or DEFAULT_OPENCLAW_HOOKS_URL
+        self._openclaw_hooks_token = hooks_token or ""
+        self._openclaw_channel_url = channel_url or DEFAULT_OPENCLAW_CHANNEL_URL
+        self._openclaw_agent_transport = (
+            "channel" if agent_transport == "channel" else "hooks"
+        )
 
     @property
     def is_running(self) -> bool:
@@ -426,6 +448,7 @@ class ApiServer:
         self._app.router.add_post("/api/pets/{pet_id}/chat_bubble/hide", self.handle_hide_chat_bubble)
         self._app.router.add_post("/api/pets/{pet_id}/message", self.handle_show_message)
         self._app.router.add_post("/api/pets/{pet_id}/message/hide", self.handle_hide_message)
+        self._app.router.add_post("/api/pets/{pet_id}/respond", self.handle_respond_as_pet)
 
         # 实例管理端点
         self._app.router.add_get("/api/instances", self.handle_list_instances)
@@ -1101,6 +1124,28 @@ class ApiServer:
         tools.append({
             "type": "function",
             "function": {
+                "name": "respond_as_pet",
+                "description": "Reply as a specific desktop pet, showing text and optionally playing an animation",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pet_id": {"type": "string", "description": "Target desktop pet instance ID"},
+                        "text": {"type": "string", "description": "Reply text shown to the user"},
+                        "animation": {"type": ["string", "null"], "description": "Optional animation name"},
+                        "duration": {
+                            "type": "integer",
+                            "description": "Bubble duration in milliseconds; 0 keeps it visible",
+                            "default": 15000,
+                        },
+                    },
+                    "required": ["pet_id", "text"],
+                },
+            },
+        })
+
+        tools.append({
+            "type": "function",
+            "function": {
                 "name": "show_message",
                 "description": "在宠物旁边显示气泡消息，可用于向用户展示通知或对话内容",
                 "parameters": {
@@ -1228,6 +1273,7 @@ class ApiServer:
             "move_pet_to_edge": self._tool_move_pet_to_edge,
             "walk_pet": self._tool_walk_pet,
             "play_animation": self._tool_play_animation,
+            "respond_as_pet": self._tool_respond_as_pet,
             "get_screens": self._tool_get_screens,
             "show_message": self._tool_show_message,
             "get_user_messages": self._tool_get_user_messages,
@@ -1376,6 +1422,88 @@ class ApiServer:
             return {"success": bool(success), "data": {"animation": name}}
         except Exception as error:
             return self._tool_error(error)
+
+    @staticmethod
+    def _normalize_reply_text(text: str) -> str:
+        return " ".join(text.split())
+
+    def _record_response_fingerprint(self, pet_id: str, text: str) -> None:
+        now = time.monotonic()
+        self._response_fingerprints = {
+            key: created for key, created in self._response_fingerprints.items()
+            if now - created <= 10.0
+        }
+        self._response_fingerprints[(pet_id, self._normalize_reply_text(text))] = now
+
+    def _consume_response_fingerprint(self, pet_id: str, text: str) -> bool:
+        now = time.monotonic()
+        key = (pet_id, self._normalize_reply_text(text))
+        created = self._response_fingerprints.pop(key, None)
+        self._response_fingerprints = {
+            item: timestamp for item, timestamp in self._response_fingerprints.items()
+            if now - timestamp <= 10.0
+        }
+        return created is not None and now - created <= 10.0
+
+    async def _tool_respond_as_pet(self, args: dict) -> dict:
+        pet_id = args.get("pet_id")
+        if not isinstance(pet_id, str) or not pet_id.strip():
+            return self._tool_error(InstanceConfigError("pet_id is required"))
+        pet_id = pet_id.strip()
+        text = args.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return self._tool_error(InstanceConfigError("text is required"))
+        text = text.strip()
+        if len(text) > 1000:
+            return self._tool_error(InstanceConfigError("text must not exceed 1000 characters"))
+        duration = args.get("duration", 15000)
+        if type(duration) is not int:
+            return self._tool_error(InstanceConfigError("duration must be an integer"))
+        if not 0 <= duration <= 60000:
+            return self._tool_error(InstanceConfigError("duration must be between 0 and 60000"))
+        animation = args.get("animation")
+        if animation is not None and not isinstance(animation, str):
+            return self._tool_error(InstanceConfigError("animation must be a string or null"))
+        animation = animation.strip() if isinstance(animation, str) else None
+        animation = animation or None
+        try:
+            def respond(pet):
+                played = None
+                if animation and animation in pet.api.get_available_animations():
+                    if pet.api.get_mode() != "motion":
+                        pet.api.set_mode("motion")
+                    if pet.api.play_animation(animation):
+                        played = animation
+                pet.show_custom_bubble_requested.emit(text, duration)
+                return played
+
+            played = await self._run_tool_pet({"pet_id": pet_id}, respond)
+            self._record_response_fingerprint(pet_id, text)
+            return {
+                "success": True,
+                "data": {
+                    "pet_id": pet_id,
+                    "text": text,
+                    "duration": duration,
+                    "requested_animation": animation,
+                    "played_animation": played,
+                    "fallback": "text_only" if animation and not played else None,
+                },
+            }
+        except Exception as error:
+            return self._tool_error(error)
+
+    async def handle_respond_as_pet(self, request: Request) -> Response:
+        try:
+            data = await request.json()
+            if not isinstance(data, dict):
+                raise InstanceConfigError("JSON body must be an object")
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON body"}, status=400)
+        args = dict(data)
+        args["pet_id"] = request.match_info.get("pet_id")
+        result = await self._tool_respond_as_pet(args)
+        return web.json_response(result, status=self._tool_result_status(result))
 
     async def _tool_get_screens(self, args: dict) -> dict:
         try:
@@ -1707,61 +1835,99 @@ class ApiServer:
 
     # ========== 消息交互端点 ==========
 
-    async def _forward_to_openclaw(self, text: str, timestamp: str) -> None:
-        """将用户消息 POST 到 OpenClaw openclaw-http-channel 插件的入站 webhook
+    @staticmethod
+    def _agent_runtime_message(text: str, pet_id: str, agent: dict) -> str:
+        return (
+            f"[Desktop Pet runtime: pet_id={pet_id}; reply_length={agent.get('reply_length', 'normal')}; "
+            f"initiative={agent.get('initiative', 'low')}. Return exactly one final JSON object and "
+            'no Markdown fences: {"text":"reply shown to the user","animation":null,'
+            '"duration":15000}. Do not include pet_id and do not call respond_as_pet, '
+            "get_pet_status, or any desktop-pet MCP tool. animation may be null or an animation "
+            "name; duration must be an integer from 0 to 60000; keep text within 1000 characters. "
+            "For remember/forget/view-memory requests, only edit the desktop-pet-managed-memory "
+            "block in MEMORY.md; use one-line items like '- <!-- memory:m_a13f2c --> text', preserve "
+            "content outside the block, and confirm ambiguous deletions.]\n\n"
+            f"User message: {text}"
+        )
 
-        采用 openclaw-http-channel 入站协议：body 为 {from, text, chatType}。
-        使用 httpx 异步发送，失败不影响桌宠主流程。
-
-        注意：openclaw-http-channel 的 inbound handler 会立即返回 202（accepted），
-        然后异步处理 agent turn。Agent 回复通过独立的出站 webhook 推送回来，
-        不在此请求的响应中返回。超时设为 10 秒足够。
-        """
-        body = {
-            "from": self._openclaw_peer,
-            "text": text,
-            "chatType": "direct",
-        }
+    async def _forward_to_openclaw(
+        self, text: str, timestamp: str, pet_id: str | None = None, agent: dict | None = None
+    ) -> None:
+        """Forward a user message through an independent Agent hook or legacy webhook."""
+        agent = agent or {}
+        independent = bool(pet_id and agent.get("enabled") and agent.get("agent_id"))
+        if independent and self._openclaw_agent_transport == "channel":
+            body = {
+                "from": pet_id,
+                "agentId": agent["agent_id"],
+                "text": text,
+                "chatType": "direct",
+                "timestamp": timestamp,
+                "runtime": {
+                    "replyLength": agent.get("reply_length", "normal"),
+                    "initiative": agent.get("initiative", "low"),
+                },
+            }
+            headers = {"Content-Type": "application/json"}
+            if self._openclaw_secret_token:
+                headers["X-Pet-Bubble-Secret"] = self._openclaw_secret_token
+            url = self._openclaw_channel_url
+        elif independent:
+            body = {
+                "message": self._agent_runtime_message(text, pet_id, agent),
+                "name": f"Desktop Pet {pet_id}",
+                "agentId": agent["agent_id"],
+                "sessionKey": agent.get("session_key") or f"hook:pet:{pet_id}",
+                "wakeMode": "now",
+                "deliver": True,
+                "channel": "pet-bubble",
+                "to": pet_id,
+            }
+            headers = {"Content-Type": "application/json"}
+            if self._openclaw_hooks_token:
+                headers["Authorization"] = f"Bearer {self._openclaw_hooks_token}"
+            url = self._openclaw_hooks_url
+        else:
+            body = {"from": self._openclaw_peer, "text": text, "chatType": "direct"}
+            headers = {"Content-Type": "application/json"}
+            url = self._openclaw_webhook_url
         try:
             import httpx
             async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.post(self._openclaw_webhook_url, json=body)
+                resp = await client.post(url, json=body, headers=headers)
                 if 200 <= resp.status_code < 300:
-                    dispatched = resp.json().get("dispatched", True)
                     logger.info(
-                        f"[OpenClaw] Message forwarded (dispatched={dispatched}): {text[:50]}"
+                        "[OpenClaw] Message forwarded via %s to %s for pet %s",
+                        self._openclaw_agent_transport if independent else "legacy",
+                        url,
+                        pet_id or "primary",
                     )
                 else:
-                    logger.warning(
-                        f"[OpenClaw] Webhook returned {resp.status_code}: {resp.text[:200]}"
-                    )
-        except Exception as e:
-            logger.warning(f"[OpenClaw] Failed to forward message: {type(e).__name__}: {e!r}")
+                    logger.warning("[OpenClaw] Webhook returned %s: %s", resp.status_code, resp.text[:200])
+        except Exception as error:
+            logger.warning("[OpenClaw] Failed to forward message: %s: %r", type(error).__name__, error)
 
-    def add_user_message(self, text: str) -> None:
-        """将用户消息添加到队列并转发到 OpenClaw
-
-        消息入队供 MCP get_user_messages 轮询，同时异步 POST 到
-        OpenClaw pet-bubble channel webhook 触发实时 session turn。
-        转发失败不影响桌宠主流程。
-        """
-        msg = {
-            "text": text,
-            "timestamp": datetime.now().isoformat(),
-        }
+    def add_user_message(self, text: str, pet_id: str | None = None) -> None:
+        """Queue a user message and asynchronously forward it to OpenClaw."""
+        timestamp = datetime.now().isoformat()
+        agent: dict = {}
+        if pet_id:
+            config = self._platform.get_instance_config(pet_id)
+            if config is not None:
+                agent = dict(config.agent or {})
+        msg = {"text": text, "timestamp": timestamp}
+        if pet_id:
+            msg["pet_id"] = pet_id
+        if agent.get("agent_id"):
+            msg["agent_id"] = agent["agent_id"]
         self._user_messages.append(msg)
-        # 异步转发到 OpenClaw webhook（不阻塞 UI 线程）
-        # 注意：add_user_message 在 Qt 主线程被调用（ChatBubble 信号槽），而
-        # _openclaw_loop 是 API 子线程的事件循环。必须用 run_coroutine_threadsafe
-        # 才能安全跨线程调度——ensure_future 用的 call_soon 非线程安全，
-        # 不会唤醒目标 loop，导致协程被延迟到 loop 下次自然活动时才执行。
         if self._openclaw_loop and self._openclaw_loop.is_running():
             asyncio.run_coroutine_threadsafe(
-                self._forward_to_openclaw(text, msg["timestamp"]),
+                self._forward_to_openclaw(text, timestamp, pet_id, agent),
                 loop=self._openclaw_loop,
             )
         else:
-            logger.warning(f"[OpenClaw] Event loop not ready, message queued only. loop={self._openclaw_loop}")
+            logger.warning("[OpenClaw] Event loop not ready, message queued only. loop=%s", self._openclaw_loop)
 
     async def handle_show_message(self, request: Request) -> Response:
         try:
@@ -1809,8 +1975,11 @@ class ApiServer:
         text = data.get("text")
         if not isinstance(text, str) or not text.strip():
             return web.json_response({"success": False, "error": "text is required"}, status=400)
-        self.add_user_message(text.strip())
-        return web.json_response({"success": True, "text": text.strip()})
+        pet_id = data.get("pet_id")
+        if pet_id is not None and not isinstance(pet_id, str):
+            return web.json_response({"success": False, "error": "pet_id must be a string"}, status=400)
+        self.add_user_message(text.strip(), pet_id=pet_id)
+        return web.json_response({"success": True, "text": text.strip(), "pet_id": pet_id})
 
     async def handle_show_chat_bubble(self, request: Request) -> Response:
         try:
@@ -1896,14 +2065,29 @@ class ApiServer:
             )
         text = text.strip()
 
-        # OpenClaw peer targets the current primary pet.
+        has_target = "to" in data
+        target = data.get("to")
+        if has_target and not isinstance(target, str):
+            return web.json_response({"error": "to must be a string"}, status=400)
+        target = target.strip() if isinstance(target, str) else None
+        if has_target and not target:
+            return self._error_response(InstanceNotFoundError("pet not found: empty to"))
         try:
-            def show_reply():
-                pet = self._resolve_pet_sync()
+            def resolve_target():
+                pet = self._resolve_pet_sync(target if has_target else None)
                 if pet is None:
-                    raise InstanceNotFoundError("pet not found: primary")
-                pet.show_chat_bubble_requested.emit(text)
-            await self._run_in_main_thread(show_reply)
+                    raise InstanceNotFoundError(f"pet not found: {target or 'primary'}")
+                config = pet.get_config() if callable(getattr(pet, "get_config", None)) else None
+                resolved_id = getattr(config, "pet_id", None) or target
+                if not resolved_id:
+                    primary = self._platform.get_primary_instance()
+                    resolved_id = primary.pet_id if primary is not None else "primary"
+                return pet, resolved_id
+
+            pet, resolved_id = await self._run_in_main_thread(resolve_target)
+            if self._consume_response_fingerprint(resolved_id, text):
+                return web.json_response({"received": True, "suppressed": True})
+            await self._run_in_main_thread(lambda: pet.show_chat_bubble_requested.emit(text))
         except Exception as error:
             return self._error_response(error)
-        return web.json_response({"received": True})
+        return web.json_response({"received": True, "suppressed": False})

@@ -121,6 +121,13 @@ class LLMConfig:
 
 
 _GLOBAL_SECTIONS: tuple[str, ...] = ("api", "tray", "startup", "display", "mcp", "llm")
+_DEFAULT_MCP_CONFIG: dict[str, Any] = {
+    "openclaw_hooks_url": "http://127.0.0.1:18789/hooks/agent",
+    "openclaw_hooks_token": "",
+    "openclaw_channel_url": "http://127.0.0.1:18789/pet-bubble-webhook",
+    "openclaw_agent_transport": "hooks",
+    "openclaw_secret_token": "",
+}
 
 
 class GlobalConfigManager:
@@ -160,6 +167,9 @@ class GlobalConfigManager:
         user_config = self._load_json(self.user_config_path)
 
         merged = self._deep_merge(default_config, user_config)
+        merged["mcp"] = self._deep_merge(
+            _DEFAULT_MCP_CONFIG, merged.get("mcp", {})
+        )
         # 仅保留全局字段
         self._raw_config = {k: v for k, v in merged.items() if k in _GLOBAL_SECTIONS}
         self._parse_config()

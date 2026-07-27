@@ -13,6 +13,7 @@ from PyQt6.QtCore import pyqtSignal
 
 from ..click_zone_dialog import ClickZoneConfigDialog
 from ..config_manager import ClickZoneConfig
+from .pet_memory_dialog import PetMemoryDialog
 from ..ui_style import (
     SECTION_STYLE, INPUT_STYLE, CHECK_STYLE,
     PRIMARY_BUTTON_STYLE, SECONDARY_BUTTON_STYLE,
@@ -107,7 +108,52 @@ class PetConfigPage(QWidget):
 
         scroll_layout.addWidget(self.instance_group)
 
-        # 2. 休息提醒组
+        # AI Agent
+        self.agent_group = QGroupBox("AI Agent")
+        agent_layout = QFormLayout(self.agent_group)
+        agent_layout.setSpacing(10)
+
+        self.agent_enabled_cb = QCheckBox("\u542f\u7528\u72ec\u7acb OpenClaw Agent")
+        self.agent_enabled_cb.toggled.connect(self._update_agent_controls)
+        agent_layout.addRow("", self.agent_enabled_cb)
+
+        self.agent_id_edit = QLineEdit()
+        self.agent_id_edit.setMaxLength(64)
+        self.agent_id_edit.setPlaceholderText("healer-cat")
+        self.agent_id_edit.textChanged.connect(self._update_agent_controls)
+        agent_layout.addRow("Agent ID", self.agent_id_edit)
+
+        self.reply_length_combo = QComboBox()
+        self.reply_length_combo.addItem("\u7b80\u77ed", "short")
+        self.reply_length_combo.addItem("\u6b63\u5e38", "normal")
+        self.reply_length_combo.addItem("\u8be6\u7ec6", "detailed")
+        agent_layout.addRow("\u56de\u590d\u957f\u5ea6", self.reply_length_combo)
+
+        self.initiative_combo = QComboBox()
+        self.initiative_combo.addItem("\u4f4e", "low")
+        self.initiative_combo.addItem("\u6b63\u5e38", "normal")
+        self.initiative_combo.addItem("\u9ad8", "high")
+        agent_layout.addRow("\u4e3b\u52a8\u6027", self.initiative_combo)
+
+        self.session_key_edit = QLineEdit()
+        self.session_key_edit.setReadOnly(True)
+        agent_layout.addRow("\u4f1a\u8bdd\u6807\u8bc6", self.session_key_edit)
+
+        self.memory_manage_btn = QPushButton("\u7ba1\u7406\u957f\u671f\u8bb0\u5fc6")
+        self.memory_manage_btn.setStyleSheet(SECONDARY_BUTTON_STYLE)
+        self.memory_manage_btn.clicked.connect(self.open_memory_manager)
+        agent_layout.addRow("", self.memory_manage_btn)
+
+        agent_hint = QLabel(
+            "\u5b8c\u6574\u4eba\u683c\u548c\u8eab\u4efd\u7531 OpenClaw Agent \u5de5\u4f5c\u533a\u7ba1\u7406\uff0c\u684c\u5ba0\u4ec5\u4fdd\u5b58\u7ed1\u5b9a\u4e0e\u4ea4\u4e92\u504f\u597d\u3002"
+        )
+        agent_hint.setWordWrap(True)
+        agent_hint.setStyleSheet(subtitle_style())
+        agent_layout.addRow("", agent_hint)
+
+        scroll_layout.addWidget(self.agent_group)
+
+        # 2. \u4f11\u606f\u63d0\u9192\u7ec4
         rest_group = QGroupBox("休息提醒")
         rest_layout = QFormLayout(rest_group)
         rest_layout.setSpacing(10)
@@ -255,7 +301,7 @@ class PetConfigPage(QWidget):
         # 应用统一样式
         for grp in (
             self.instance_group, rest_group, movement_group,
-            motion_group, behavior_group,
+            motion_group, behavior_group, self.agent_group,
             self.appearance_group, self.click_detection_group,
         ):
             grp.setStyleSheet(SECTION_STYLE)
@@ -267,6 +313,8 @@ class PetConfigPage(QWidget):
             self.speed_spin, self.motion_default_mode_combo,
             self.head_action_edit, self.body_action_edit,
             self.regular_image_edit, self.flying_image_edit, self.rest_animation_edit,
+            self.agent_id_edit, self.reply_length_combo, self.initiative_combo,
+            self.session_key_edit,
         ):
             field.setStyleSheet(INPUT_STYLE)
 
@@ -348,12 +396,42 @@ class PetConfigPage(QWidget):
         self.head_action_edit.setText(str(behavior.get("default_head_action", "head")))
         self.body_action_edit.setText(str(behavior.get("default_body_action", "body_tap")))
 
+        agent = cfg.agent or {}
+        self.agent_enabled_cb.setChecked(bool(agent.get("enabled", False)))
+        self.agent_id_edit.setText(str(agent.get("agent_id", "")))
+        idx = self.reply_length_combo.findData(agent.get("reply_length", "normal"))
+        self.reply_length_combo.setCurrentIndex(max(0, idx))
+        idx = self.initiative_combo.findData(agent.get("initiative", "low"))
+        self.initiative_combo.setCurrentIndex(max(0, idx))
+        self.session_key_edit.setText(f"hook:pet:{cfg.pet_id}")
+        self._update_agent_controls()
+
         click = cfg.click_detection or {}
         self.click_enabled_cb.setChecked(bool(click.get("enabled", False)))
         self._click_zones_buffer = copy.deepcopy(click.get("zones", []))
         self.click_zone_count_label.setText(
             f"当前配置: {len(self._click_zones_buffer)} 个点击区域"
         )
+
+    def _update_agent_controls(self):
+        enabled = self.agent_enabled_cb.isChecked()
+        self.agent_id_edit.setEnabled(enabled)
+        self.reply_length_combo.setEnabled(enabled)
+        self.initiative_combo.setEnabled(enabled)
+        self.session_key_edit.setEnabled(enabled)
+        self.memory_manage_btn.setEnabled(
+            enabled and bool(self.agent_id_edit.text().strip())
+        )
+
+    def open_memory_manager(self):
+        agent_id = self.agent_id_edit.text().strip()
+        if not self.agent_enabled_cb.isChecked() or not agent_id:
+            return
+        pet_name = self.instance_config.package
+        if self.pet_package is not None and getattr(self.pet_package, "meta", None):
+            pet_name = self.pet_package.meta.name
+        dialog = PetMemoryDialog(pet_name, agent_id, self.platform, self)
+        dialog.exec()
 
     def configure_click_zones(self):
         if self.pet_package is None:
@@ -403,6 +481,14 @@ class PetConfigPage(QWidget):
                 "y": self.pos_y_spin.value(),
             },
             "size": self.size_spin.value(),
+            "agent": {
+                "enabled": self.agent_enabled_cb.isChecked(),
+                "provider": "openclaw",
+                "agent_id": self.agent_id_edit.text().strip(),
+                "session_key": f"hook:pet:{pet_id}",
+                "reply_length": self.reply_length_combo.currentData(),
+                "initiative": self.initiative_combo.currentData(),
+            },
             "rest_reminder": {
                 "enabled": self.rest_enabled_cb.isChecked(),
                 "interval_minutes": self.rest_interval_spin.value(),

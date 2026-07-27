@@ -1,0 +1,64 @@
+// Merge this example into ~/.openclaw/openclaw.json.
+// Do not overwrite existing agents, plugins, channels, or bindings wholesale.
+// Replace every <placeholder>; never commit real secrets.
+{
+  gateway: {
+    mode: "local",
+    bind: "loopback",
+    port: 18789,
+  },
+
+  plugins: {
+    entries: {
+      "pet-bubble": {
+        enabled: true,
+      },
+    },
+    load: {
+      paths: [
+        "D:\\code\\pet-pc\\openclaw-plugins\\pet-bubble",
+      ],
+    },
+  },
+
+  channels: {
+    "pet-bubble": {
+      enabled: true,
+      webhookPath: "/pet-bubble-webhook",
+      webhookHost: "127.0.0.1",
+      desktopApiBase: "http://127.0.0.1:8080/api",
+      sharedSecret: "<generate-a-random-shared-secret>",
+      autoReply: true,
+    },
+  },
+
+  bindings: [
+    {
+      agentId: "<agent_id>",
+      match: {
+        channel: "pet-bubble",
+        accountId: "default",
+        peer: {
+          kind: "direct",
+          id: "<pet_id>",
+        },
+      },
+    },
+  ],
+
+  session: {
+    dmScope: "per-channel-peer",
+  },
+
+  messages: {
+    queue: {
+      mode: "steer",
+      debounceMsByChannel: {
+        "pet-bubble": 0,
+      },
+    },
+  },
+
+  // Desktop Pet MCP is intentionally omitted. The persistent Channel chat path
+  // delivers structured final replies directly to /api/pets/<pet_id>/respond.
+}

@@ -228,7 +228,13 @@ class TestGlobalConfigManager:
         assert mgr.display.cross_screen_drag is True  # DisplayConfig 默认
         assert mgr.llm.model == "gpt-4o-mini"  # LLMConfig 默认
         assert mgr.api == {}  # 无 api 段
-        assert mgr.mcp == {}  # 无 mcp 段
+        assert mgr.mcp == {
+            "openclaw_hooks_url": "http://127.0.0.1:18789/hooks/agent",
+            "openclaw_hooks_token": "",
+            "openclaw_channel_url": "http://127.0.0.1:18789/pet-bubble-webhook",
+            "openclaw_agent_transport": "hooks",
+            "openclaw_secret_token": "",
+        }
 
 
 # ---------------------------------------------------------------------------
