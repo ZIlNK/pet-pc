@@ -1183,9 +1183,9 @@ class DesktopPet(QWidget):
         context_menu.addAction(open_settings_action)
 
         context_menu.addSeparator()
-        close_instance_action = QAction("关闭此桌宠", self)
-        close_instance_action.triggered.connect(self.close_instance)
-        context_menu.addAction(close_instance_action)
+        hide_pet_action = QAction("隐藏桌宠", self)
+        hide_pet_action.triggered.connect(self.hide)
+        context_menu.addAction(hide_pet_action)
 
         context_menu.exec(event.globalPos())
     def _open_settings_center(self):

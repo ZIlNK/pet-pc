@@ -1,0 +1,38 @@
+:root {
+  --ink: #163f36;
+  --ink-soft: #537168;
+  --moss: #2f7d68;
+  --moss-deep: #215e50;
+  --moss-pale: #e4f0ea;
+  --amber: #f2c572;
+  --amber-pale: #fff1d0;
+  --paper: #f6f7f3;
+  --card: #ffffff;
+  --line: #d7e1da;
+  --danger: #b74d43;
+  --danger-pale: #fbe8e4;
+  --success: #237c56;
+  --shadow-card: 0 16px 38px rgb(28 69 58 / 10%);
+  --shadow-float: 0 24px 54px rgb(22 63 54 / 18%);
+  --radius-sm: 10px;
+  --radius-md: 16px;
+  --radius-lg: 24px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 28px;
+  --space-7: 36px;
+  --sidebar-width: 238px;
+  --focus: 0 0 0 3px rgb(242 197 114 / 55%);
+  font-family: "Aptos", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
+  color: var(--ink);
+  background: var(--paper);
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--paper); }
+button, input, select, textarea { font: inherit; }
+button { cursor: pointer; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: none; box-shadow: var(--focus); }

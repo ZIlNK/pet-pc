@@ -1,8 +1,13 @@
 import asyncio
+import copy
 import ipaddress
 import json
 import logging
 import os
+import shutil
+import tempfile
+import zipfile
+from pathlib import Path
 import threading
 import time
 from collections import deque
@@ -16,6 +21,9 @@ from aiohttp.web import Request, Response
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
 from .motion_controller import MotionModeController
+from .openclaw_memory_client import OpenClawMemoryClient, OpenClawMemoryError
+from .startup_manager import set_startup_enabled
+from .utils import get_pets_path
 from .instances_store import InstancesStoreError
 from .reply_bubble import DEFAULT_REPLY_DURATION_MS
 from .pet_instance import (
@@ -458,6 +466,20 @@ class ApiServer:
         self._app.router.add_patch("/api/instances/{pet_id}", self.handle_update_instance)
         self._app.router.add_delete("/api/instances/{pet_id}", self.handle_delete_instance)
 
+        # Electron control center endpoints.  They intentionally expose only
+        # platform operations; the renderer never reads configuration or packages.
+        self._app.router.add_get("/api/control-center/health", self.handle_control_center_health)
+        self._app.router.add_get("/api/control-center/global-settings", self.handle_control_center_global_settings)
+        self._app.router.add_patch("/api/control-center/global-settings", self.handle_update_control_center_global_settings)
+        self._app.router.add_get("/api/control-center/pets", self.handle_control_center_pets)
+        self._app.router.add_get("/api/control-center/pets/{package}/preview", self.handle_control_center_pet_preview)
+        self._app.router.add_post("/api/control-center/pets", self.handle_create_control_center_pet)
+        self._app.router.add_post("/api/control-center/pets/import", self.handle_import_control_center_pet)
+        self._app.router.add_get("/api/control-center/pets/{pet_id}/memories", self.handle_control_center_memories)
+        self._app.router.add_post("/api/control-center/pets/{pet_id}/memories", self.handle_add_control_center_memory)
+        self._app.router.add_delete("/api/control-center/pets/{pet_id}/memories/{memory_id}", self.handle_delete_control_center_memory)
+        self._app.router.add_delete("/api/control-center/pets/{pet_id}/memories", self.handle_clear_control_center_memories)
+
         # AI tool-calling endpoints
         self._app.router.add_get("/api/tools", self.handle_tools_list)
         self._app.router.add_post("/api/tools/call", self.handle_tools_call)
@@ -858,6 +880,378 @@ class ApiServer:
             if not success:
                 raise InstanceNotFoundError(f"pet not found: {pet_id}")
             return web.json_response({"success": True})
+        except Exception as error:
+            return self._error_response(error)
+
+    # ========== Electron control center ==========
+
+    @staticmethod
+    def _control_center_is_local(request: Request) -> bool:
+        """Keep management and package endpoints bound to the local machine."""
+        return request.remote in {"127.0.0.1", "::1", None}
+
+    @staticmethod
+    def _control_center_invalid_name(name: str) -> bool:
+        return (
+            not name
+            or len(name) > 80
+            or name in {".", ".."}
+            or any(char in name for char in ('/', '\\', ':', '*', '?', '"', '<', '>', '|'))
+        )
+
+    def _control_center_settings(self) -> dict:
+        manager = getattr(self._platform, "global_config", None)
+        config = copy.deepcopy(getattr(manager, "config", {}) or {})
+        api_server = getattr(self._platform, "api_server", None)
+        llm = dict(config.get("llm", {}) or {})
+        mcp = dict(config.get("mcp", {}) or {})
+        api_key = llm.pop("api_key", "")
+        hooks_token = mcp.pop("openclaw_hooks_token", "")
+        secret_token = mcp.pop("openclaw_secret_token", "")
+        return {
+            "startup": dict(config.get("startup", {}) or {}),
+            "tray": dict(config.get("tray", {}) or {}),
+            "display": dict(config.get("display", {}) or {}),
+            "api": {
+                **dict(config.get("api", {}) or {}),
+                "running": bool(api_server and api_server.is_running),
+            },
+            "llm": {**llm, "api_key_configured": bool(api_key)},
+            "mcp": {
+                **mcp,
+                "openclaw_hooks_token_configured": bool(hooks_token),
+                "openclaw_secret_token_configured": bool(secret_token),
+            },
+        }
+
+    def _control_center_refresh_package(self, package_name: str) -> None:
+        loader = getattr(self._platform, "pet_loader", None)
+        packages = getattr(self._platform, "pet_packages", None)
+        if loader is None or not isinstance(packages, dict):
+            return
+        package = loader.load_pet(package_name)
+        if package is not None:
+            packages[package.name] = package
+
+    @staticmethod
+    def _control_center_preview_path(package) -> Path | None:
+        """Return the first existing, package-contained image suitable for a card preview."""
+        animations_root = Path(package.animations_dir).resolve()
+        meta = getattr(package, "meta", None)
+        candidates = [
+            getattr(meta, "preview", ""),
+            getattr(meta, "regular_image", ""),
+        ]
+        for action in getattr(package, "actions", []) or []:
+            candidates.extend(getattr(action, "animation_files", []) or [])
+
+        for name in candidates:
+            if not isinstance(name, str) or not name:
+                continue
+            candidate = (animations_root / name).resolve()
+            if animations_root in candidate.parents and candidate.is_file():
+                return candidate
+        return None
+
+    def _control_center_package_records(self) -> list[dict]:
+        loader = getattr(self._platform, "pet_loader", None)
+        if loader is None:
+            return []
+        records = []
+        for package in loader.scan_pets():
+            meta = getattr(package, "meta", None)
+            actions = getattr(package, "actions", []) or []
+            records.append({
+                "name": package.name,
+                "author": getattr(meta, "author", ""),
+                "version": getattr(meta, "version", ""),
+                "description": getattr(meta, "description", ""),
+                "preview_available": self._control_center_preview_path(package) is not None,
+                "action_count": len(actions),
+            })
+        return records
+
+    def _control_center_memory_client(self, pet_id: str) -> OpenClawMemoryClient:
+        config = self._platform.get_instance_config(pet_id)
+        if config is None:
+            raise InstanceNotFoundError(f"pet not found: {pet_id}")
+        agent = getattr(config, "agent", {}) or {}
+        agent_id = str(agent.get("agent_id", "")).strip()
+        if not agent.get("enabled") or not agent_id:
+            raise InstanceConfigError("The pet does not have an enabled OpenClaw agent")
+        mcp = getattr(getattr(self._platform, "global_config", None), "mcp", {}) or {}
+        return OpenClawMemoryClient(
+            str(mcp.get("openclaw_hooks_url", "")),
+            str(mcp.get("openclaw_secret_token", "")),
+        )
+
+    @staticmethod
+    def _control_center_memory_error(error: OpenClawMemoryError) -> Response:
+        return web.json_response({"error": str(error), "kind": error.kind}, status=502)
+
+    async def handle_control_center_health(self, request: Request) -> Response:
+        if not self._control_center_is_local(request):
+            return web.json_response({"error": "Control center is local only"}, status=403)
+        return web.json_response({
+            "connected": True,
+            "api_running": bool(self.is_running),
+        })
+
+    async def handle_control_center_global_settings(self, request: Request) -> Response:
+        if not self._control_center_is_local(request):
+            return web.json_response({"error": "Control center is local only"}, status=403)
+        try:
+            return web.json_response(await self._run_in_main_thread(self._control_center_settings))
+        except Exception as error:
+            return self._error_response(error)
+
+    async def handle_update_control_center_global_settings(self, request: Request) -> Response:
+        if not self._control_center_is_local(request):
+            return web.json_response({"error": "Control center is local only"}, status=403)
+        try:
+            data = await request.json()
+            if not isinstance(data, dict):
+                raise InstanceConfigError("JSON body must be an object")
+        except Exception:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+        allowed_sections = {"startup", "tray", "display", "api", "llm", "mcp"}
+        if any(key not in allowed_sections for key in data):
+            return web.json_response({"error": "Unsupported global settings section"}, status=400)
+
+        try:
+            def save() -> dict:
+                manager = getattr(self._platform, "global_config", None)
+                if manager is None:
+                    raise RuntimeError("Global configuration is unavailable")
+                current = copy.deepcopy(getattr(manager, "config", {}) or {})
+                sections: dict[str, dict] = {}
+                for section, incoming in data.items():
+                    if not isinstance(incoming, dict):
+                        raise InstanceConfigError(f"{section} must be an object")
+                    merged = dict(current.get(section, {}) or {})
+                    merged.update(incoming)
+                    sections[section] = merged
+
+                for section, secret_keys in {
+                    "llm": ("api_key",),
+                    "mcp": ("openclaw_hooks_token", "openclaw_secret_token"),
+                }.items():
+                    if section not in sections:
+                        continue
+                    for key in secret_keys:
+                        if sections[section].get(key) == "":
+                            sections[section][key] = current.get(section, {}).get(key, "")
+
+                api = sections.get("api")
+                if api is not None:
+                    if not isinstance(api.get("port", 8080), int) or not 1 <= api["port"] <= 65535:
+                        raise InstanceConfigError("api.port must be between 1 and 65535")
+                    if not isinstance(api.get("allowed_ips", []), list) or not all(isinstance(ip, str) for ip in api["allowed_ips"]):
+                        raise InstanceConfigError("api.allowed_ips must be a string list")
+
+                manager.save_global_settings(sections)
+                if "startup" in sections and "enabled" in sections["startup"]:
+                    set_startup_enabled(bool(sections["startup"]["enabled"]))
+                api_server = getattr(self._platform, "api_server", None)
+                if api_server is not None and api is not None:
+                    api_server.set_allowed_ips(api.get("allowed_ips", []))
+                    api_server.configure(api.get("host", "127.0.0.1"), api.get("port", 8080))
+                return self._control_center_settings()
+
+            return web.json_response(await self._run_in_main_thread(save))
+        except Exception as error:
+            return self._error_response(error)
+
+    async def handle_control_center_pets(self, request: Request) -> Response:
+        if not self._control_center_is_local(request):
+            return web.json_response({"error": "Control center is local only"}, status=403)
+        try:
+            return web.json_response({"pets": await self._run_in_main_thread(self._control_center_package_records)})
+        except Exception as error:
+            return self._error_response(error)
+
+    async def handle_control_center_pet_preview(self, request: Request) -> Response:
+        if not self._control_center_is_local(request):
+            return web.json_response({"error": "Control center is local only"}, status=403)
+        package_name = request.match_info.get("package", "")
+        try:
+            def preview_path() -> Path:
+                loader = getattr(self._platform, "pet_loader", None)
+                package = loader.load_pet(package_name) if loader is not None else None
+                if package is None:
+                    raise PackageNotFoundError(f"package not found: {package_name}")
+                candidate = self._control_center_preview_path(package)
+                if candidate is None:
+                    raise FileNotFoundError("Preview image is unavailable")
+                return candidate
+            return web.FileResponse(await self._run_in_main_thread(preview_path))
+        except FileNotFoundError as error:
+            return web.json_response({"error": str(error)}, status=404)
+        except Exception as error:
+            return self._error_response(error)
+
+    async def handle_create_control_center_pet(self, request: Request) -> Response:
+        if not self._control_center_is_local(request):
+            return web.json_response({"error": "Control center is local only"}, status=403)
+        try:
+            form = await request.post()
+            name = str(form.get("name", "")).strip()
+            author = str(form.get("author", "")).strip() or "User"
+            image = form.get("image")
+            if self._control_center_invalid_name(name):
+                raise InstanceConfigError("Invalid package name")
+            if not hasattr(image, "file") or not getattr(image, "filename", ""):
+                raise InstanceConfigError("An image file is required")
+            filename = Path(image.filename).name
+            suffix = Path(filename).suffix.lower()
+            if suffix not in {".gif", ".png", ".webp", ".apng"}:
+                raise InstanceConfigError("Image must be GIF, PNG, WebP, or APNG")
+            image_bytes = image.file.read()
+            if not image_bytes or len(image_bytes) > 20 * 1024 * 1024:
+                raise InstanceConfigError("Image must be between 1 byte and 20 MiB")
+        except Exception as error:
+            return self._error_response(error)
+
+        try:
+            def create() -> dict:
+                pets_path = get_pets_path()
+                destination = pets_path / name
+                if destination.exists():
+                    raise InstanceConflictError(f"package already exists: {name}")
+                animations = destination / "animations"
+                config = destination / "config"
+                animations.mkdir(parents=True)
+                config.mkdir()
+                try:
+                    (animations / filename).write_bytes(image_bytes)
+                    (destination / "meta.json").write_text(json.dumps({
+                        "name": name, "author": author, "version": "1.0.0", "description": "",
+                        "preview": filename, "regular_image": filename, "flying_image": filename,
+                        "rest_animation": filename,
+                    }, ensure_ascii=False, indent=2), encoding="utf-8")
+                    (config / "actions.json").write_text(json.dumps({"actions": [{
+                        "name": "idle", "type": "animation", "weight": 1,
+                        "animation_files": [filename], "enabled": True, "config": {},
+                    }]}, ensure_ascii=False, indent=2), encoding="utf-8")
+                    self._control_center_refresh_package(name)
+                except Exception:
+                    shutil.rmtree(destination, ignore_errors=True)
+                    raise
+                return {"name": name}
+            return web.json_response(await self._run_in_main_thread(create), status=201)
+        except Exception as error:
+            return self._error_response(error)
+
+    async def handle_import_control_center_pet(self, request: Request) -> Response:
+        if not self._control_center_is_local(request):
+            return web.json_response({"error": "Control center is local only"}, status=403)
+        try:
+            form = await request.post()
+            archive = form.get("archive")
+            overwrite = str(form.get("overwrite", "false")).lower() == "true"
+            if not hasattr(archive, "file") or not getattr(archive, "filename", ""):
+                raise InstanceConfigError("A ZIP archive is required")
+            archive_bytes = archive.file.read()
+            if not archive_bytes or len(archive_bytes) > 100 * 1024 * 1024:
+                raise InstanceConfigError("Archive must be between 1 byte and 100 MiB")
+        except Exception as error:
+            return self._error_response(error)
+
+        try:
+            def import_package() -> dict:
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    archive_path = Path(temp_dir) / "package.zip"
+                    archive_path.write_bytes(archive_bytes)
+                    with zipfile.ZipFile(archive_path) as zip_file:
+                        members = zip_file.infolist()
+                        if not members or len(members) > 2000:
+                            raise InstanceConfigError("Archive has an invalid number of files")
+                        for member in members:
+                            target = (Path(temp_dir) / member.filename).resolve()
+                            if Path(temp_dir).resolve() not in target.parents and target != Path(temp_dir).resolve():
+                                raise InstanceConfigError("Archive contains an unsafe path")
+                            if member.is_dir() or (member.external_attr >> 16) & 0o170000 == 0o120000:
+                                if not member.is_dir():
+                                    raise InstanceConfigError("Archive may not contain symlinks")
+                        zip_file.extractall(temp_dir)
+
+                    root = Path(temp_dir)
+                    meta_files = list(root.glob("*/meta.json"))
+                    if len(meta_files) != 1:
+                        raise InstanceConfigError("Archive must contain exactly one package meta.json")
+                    source = meta_files[0].parent
+                    if not (source / "animations").is_dir():
+                        raise InstanceConfigError("Package is missing animations")
+                    meta = json.loads(meta_files[0].read_text(encoding="utf-8"))
+                    name = str(meta.get("name", source.name)).strip()
+                    if self._control_center_invalid_name(name):
+                        raise InstanceConfigError("Package metadata has an invalid name")
+                    pets_path = get_pets_path()
+                    destination = pets_path / name
+                    if destination.exists() and not overwrite:
+                        raise InstanceConflictError(f"package already exists: {name}")
+                    if destination.exists():
+                        shutil.rmtree(destination)
+                    shutil.copytree(source, destination)
+                    self._control_center_refresh_package(name)
+                    return {"name": name, "overwritten": overwrite}
+            return web.json_response(await self._run_in_main_thread(import_package), status=201)
+        except zipfile.BadZipFile:
+            return web.json_response({"error": "Invalid ZIP archive"}, status=400)
+        except Exception as error:
+            return self._error_response(error)
+
+    async def handle_control_center_memories(self, request: Request) -> Response:
+        pet_id = request.match_info.get("pet_id", "")
+        try:
+            client = await self._run_in_main_thread(lambda: self._control_center_memory_client(pet_id))
+            config = await self._run_in_main_thread(lambda: self._platform.get_instance_config(pet_id))
+            result = await asyncio.to_thread(client.list_memories, config.agent["agent_id"])
+            return web.json_response({"memories": result})
+        except OpenClawMemoryError as error:
+            return self._control_center_memory_error(error)
+        except Exception as error:
+            return self._error_response(error)
+
+    async def handle_add_control_center_memory(self, request: Request) -> Response:
+        pet_id = request.match_info.get("pet_id", "")
+        try:
+            data = await request.json()
+            text = " ".join(str(data.get("text", "")).split()) if isinstance(data, dict) else ""
+            if not text or len(text) > 500:
+                raise InstanceConfigError("Memory text must be 1 to 500 characters")
+            client = await self._run_in_main_thread(lambda: self._control_center_memory_client(pet_id))
+            config = await self._run_in_main_thread(lambda: self._platform.get_instance_config(pet_id))
+            result = await asyncio.to_thread(client.add_memory, config.agent["agent_id"], text)
+            return web.json_response(result, status=201)
+        except OpenClawMemoryError as error:
+            return self._control_center_memory_error(error)
+        except Exception as error:
+            return self._error_response(error)
+
+    async def handle_delete_control_center_memory(self, request: Request) -> Response:
+        pet_id = request.match_info.get("pet_id", "")
+        memory_id = request.match_info.get("memory_id", "")
+        try:
+            client = await self._run_in_main_thread(lambda: self._control_center_memory_client(pet_id))
+            config = await self._run_in_main_thread(lambda: self._platform.get_instance_config(pet_id))
+            await asyncio.to_thread(client.delete_memory, config.agent["agent_id"], memory_id)
+            return web.json_response({"success": True})
+        except OpenClawMemoryError as error:
+            return self._control_center_memory_error(error)
+        except Exception as error:
+            return self._error_response(error)
+
+    async def handle_clear_control_center_memories(self, request: Request) -> Response:
+        pet_id = request.match_info.get("pet_id", "")
+        try:
+            client = await self._run_in_main_thread(lambda: self._control_center_memory_client(pet_id))
+            config = await self._run_in_main_thread(lambda: self._platform.get_instance_config(pet_id))
+            await asyncio.to_thread(client.clear_memories, config.agent["agent_id"])
+            return web.json_response({"success": True})
+        except OpenClawMemoryError as error:
+            return self._control_center_memory_error(error)
         except Exception as error:
             return self._error_response(error)
 

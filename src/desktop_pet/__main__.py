@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 # 模块级单例：设置中心对话框（避免重复创建）
 _settings_center_instance = None
+_electron_control_launcher = None
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -480,16 +481,24 @@ def _run_gui(args: argparse.Namespace) -> None:
 # 辅助函数
 # ----------------------------------------------------------------------
 def _open_settings(platform):
-    """打开设置中心（单例模式，重复调用仅 raise 已有窗口）。"""
-    global _settings_center_instance
-    from .settings_center import SettingsCenter
+    """Open the single Electron control center, retaining PyQt as a fallback."""
+    global _electron_control_launcher, _settings_center_instance
+    try:
+        from .electron_control import ElectronControlLauncher
+        if _electron_control_launcher is None:
+            _electron_control_launcher = ElectronControlLauncher()
+        api_port = platform.global_config.api.get("port", 8080)
+        _electron_control_launcher.open(f"http://127.0.0.1:{api_port}/api")
+        return
+    except Exception as error:
+        logger.warning("Electron control center unavailable; using PyQt fallback: %s", error)
 
+    from .settings_center import SettingsCenter
     if _settings_center_instance is None:
         _settings_center_instance = SettingsCenter(platform)
     _settings_center_instance.show()
     _settings_center_instance.raise_()
     _settings_center_instance.activateWindow()
-
 
 def _exit_platform(platform, app):
     """Persist and close the platform without deleting instance records."""
