@@ -99,12 +99,13 @@ test("validates and normalizes direct inbound payloads", () => {
     text: " hello ",
     chatType: "direct",
     timestamp: "2026-07-24T12:30:25Z",
-    runtime: { replyLength: "short", initiative: "high" }
+    runtime: { replyLength: "short", initiative: "high", animations: ["sit", "sleep", "sit"] }
   });
   assert.equal(payload.from, "pet-a");
   assert.equal(payload.text, "hello");
   assert.equal(payload.replyLength, "short");
   assert.equal(payload.initiative, "high");
+  assert.deepEqual(payload.animations, ["sit", "sleep"]);
   assert.ok(Number.isFinite(payload.timestamp));
 });
 
@@ -116,20 +117,26 @@ test("rejects invalid inbound payload fields", () => {
     [{ from: "pet-a", agentId: "healer-cat", text: "x".repeat(10001) }, /too long/],
     [{ from: "pet-a", agentId: "healer-cat", text: "hi", chatType: "group" }, /direct/],
     [{ from: "pet-a", agentId: "healer-cat", text: "hi", runtime: { replyLength: "huge" } }, /replyLength/],
-    [{ from: "pet-a", agentId: "healer-cat", text: "hi", runtime: { initiative: "always" } }, /initiative/]
+    [{ from: "pet-a", agentId: "healer-cat", text: "hi", runtime: { initiative: "always" } }, /initiative/],
+    [{ from: "pet-a", agentId: "healer-cat", text: "hi", runtime: { animations: "sit" } }, /animations/],
+    [{ from: "pet-a", agentId: "healer-cat", text: "hi", runtime: { animations: ["bad\nname"] } }, /animations/]
   ];
   for (const [body, expected] of cases) assert.throws(() => validateInboundPayload(body), expected);
 });
 
 test("builds a compact Agent-visible runtime message", () => {
   const message = buildAgentMessage({
-    from: "pet-a", text: "hello", replyLength: "normal", initiative: "low"
+    from: "pet-a", text: "hello", replyLength: "normal", initiative: "low",
+    animations: ["sit", "tail_wag"]
   });
   assert.match(message, /pet_id=pet-a/);
   assert.match(message, /exactly one final JSON object/);
   assert.match(message, /duration/);
+  assert.match(message, /"duration":10000/);
   assert.match(message, /Do not include pet_id/);
   assert.match(message, /do not call respond_as_pet/);
+  assert.match(message, /Available animation names: \["sit","tail_wag"\]/);
+  assert.match(message, /one exact listed name or null/);
   assert.match(message, /User message: hello/);
   assert.doesNotMatch(message, /SECURITY NOTICE|Job ID/);
 });

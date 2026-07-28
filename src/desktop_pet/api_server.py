@@ -17,6 +17,7 @@ from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
 from .motion_controller import MotionModeController
 from .instances_store import InstancesStoreError
+from .reply_bubble import DEFAULT_REPLY_DURATION_MS
 from .pet_instance import (
     InstanceConfigError,
     InstanceConflictError,
@@ -1135,7 +1136,7 @@ class ApiServer:
                         "duration": {
                             "type": "integer",
                             "description": "Bubble duration in milliseconds; 0 keeps it visible",
-                            "default": 15000,
+                            "default": DEFAULT_REPLY_DURATION_MS,
                         },
                     },
                     "required": ["pet_id", "text"],
@@ -1157,7 +1158,8 @@ class ApiServer:
                         },
                         "duration": {
                             "type": "integer",
-                            "description": "消息显示时长（毫秒），默认 5000（5秒）",
+                            "description": "Bubble duration in milliseconds; 0 keeps it visible",
+                            "default": DEFAULT_REPLY_DURATION_MS,
                         },
                         "pet_id": pet_id_param,
                     },
@@ -1456,7 +1458,7 @@ class ApiServer:
         text = text.strip()
         if len(text) > 1000:
             return self._tool_error(InstanceConfigError("text must not exceed 1000 characters"))
-        duration = args.get("duration", 15000)
+        duration = args.get("duration", DEFAULT_REPLY_DURATION_MS)
         if type(duration) is not int:
             return self._tool_error(InstanceConfigError("duration must be an integer"))
         if not 0 <= duration <= 60000:
@@ -1469,11 +1471,28 @@ class ApiServer:
         try:
             def respond(pet):
                 played = None
-                if animation and animation in pet.api.get_available_animations():
-                    if pet.api.get_mode() != "motion":
-                        pet.api.set_mode("motion")
-                    if pet.api.play_animation(animation):
+                available_animations = pet.api.get_available_animations()
+                if animation and animation in available_animations:
+                    if pet.api.play_animation(animation, force=True):
                         played = animation
+                        logger.info(
+                            "[RespondAsPet] Played animation pet=%s animation=%s",
+                            pet_id,
+                            animation,
+                        )
+                    else:
+                        logger.warning(
+                            "[RespondAsPet] Animation playback rejected pet=%s animation=%s",
+                            pet_id,
+                            animation,
+                        )
+                elif animation:
+                    logger.warning(
+                        "[RespondAsPet] Animation unavailable pet=%s animation=%s available=%s",
+                        pet_id,
+                        animation,
+                        available_animations,
+                    )
                 pet.show_custom_bubble_requested.emit(text, duration)
                 return played
 
@@ -1522,10 +1541,11 @@ class ApiServer:
         text = args.get("text")
         if not isinstance(text, str) or not text.strip():
             return self._tool_error(InstanceConfigError("text is required"))
-        try:
-            duration = int(args.get("duration", 5000))
-        except (TypeError, ValueError):
+        duration = args.get("duration", DEFAULT_REPLY_DURATION_MS)
+        if type(duration) is not int:
             return self._tool_error(InstanceConfigError("duration must be an integer"))
+        if not 0 <= duration <= 60000:
+            return self._tool_error(InstanceConfigError("duration must be between 0 and 60000"))
         try:
             await self._run_tool_pet(
                 args, lambda pet: pet.show_custom_bubble_requested.emit(text.strip(), duration)
@@ -1836,14 +1856,40 @@ class ApiServer:
     # ========== 消息交互端点 ==========
 
     @staticmethod
-    def _agent_runtime_message(text: str, pet_id: str, agent: dict) -> str:
+    def _available_animation_names(config) -> list[str]:
+        actions = getattr(config, "actions", None)
+        if not isinstance(actions, dict):
+            return []
+        return [
+            name for name, action in actions.items()
+            if isinstance(name, str)
+            and isinstance(action, dict)
+            and action.get("enabled") is True
+            and action.get("type") == "animation"
+        ]
+
+    @staticmethod
+    def _agent_runtime_message(
+        text: str,
+        pet_id: str,
+        agent: dict,
+        animations: list[str] | None = None,
+    ) -> str:
+        animations = animations or []
+        animation_rule = (
+            f"Available animation names: {json.dumps(animations, ensure_ascii=False)}. "
+            "Set animation to one exact listed name or null. "
+            if animations
+            else "No animations are currently available; animation must be null. "
+        )
         return (
             f"[Desktop Pet runtime: pet_id={pet_id}; reply_length={agent.get('reply_length', 'normal')}; "
             f"initiative={agent.get('initiative', 'low')}. Return exactly one final JSON object and "
             'no Markdown fences: {"text":"reply shown to the user","animation":null,'
-            '"duration":15000}. Do not include pet_id and do not call respond_as_pet, '
-            "get_pet_status, or any desktop-pet MCP tool. animation may be null or an animation "
-            "name; duration must be an integer from 0 to 60000; keep text within 1000 characters. "
+            '"duration":10000}. Do not include pet_id and do not call respond_as_pet, '
+            "get_pet_status, or any desktop-pet MCP tool. "
+            f"{animation_rule}"
+            "duration must be an integer from 0 to 60000; keep text within 1000 characters. "
             "For remember/forget/view-memory requests, only edit the desktop-pet-managed-memory "
             "block in MEMORY.md; use one-line items like '- <!-- memory:m_a13f2c --> text', preserve "
             "content outside the block, and confirm ambiguous deletions.]\n\n"
@@ -1851,10 +1897,16 @@ class ApiServer:
         )
 
     async def _forward_to_openclaw(
-        self, text: str, timestamp: str, pet_id: str | None = None, agent: dict | None = None
+        self,
+        text: str,
+        timestamp: str,
+        pet_id: str | None = None,
+        agent: dict | None = None,
+        animations: list[str] | None = None,
     ) -> None:
         """Forward a user message through an independent Agent hook or legacy webhook."""
         agent = agent or {}
+        animations = list(animations or [])
         independent = bool(pet_id and agent.get("enabled") and agent.get("agent_id"))
         if independent and self._openclaw_agent_transport == "channel":
             body = {
@@ -1866,6 +1918,7 @@ class ApiServer:
                 "runtime": {
                     "replyLength": agent.get("reply_length", "normal"),
                     "initiative": agent.get("initiative", "low"),
+                    "animations": animations,
                 },
             }
             headers = {"Content-Type": "application/json"}
@@ -1874,7 +1927,9 @@ class ApiServer:
             url = self._openclaw_channel_url
         elif independent:
             body = {
-                "message": self._agent_runtime_message(text, pet_id, agent),
+                "message": self._agent_runtime_message(
+                    text, pet_id, agent, animations
+                ),
                 "name": f"Desktop Pet {pet_id}",
                 "agentId": agent["agent_id"],
                 "sessionKey": agent.get("session_key") or f"hook:pet:{pet_id}",
@@ -1911,10 +1966,12 @@ class ApiServer:
         """Queue a user message and asynchronously forward it to OpenClaw."""
         timestamp = datetime.now().isoformat()
         agent: dict = {}
+        animations: list[str] = []
         if pet_id:
             config = self._platform.get_instance_config(pet_id)
             if config is not None:
                 agent = dict(config.agent or {})
+                animations = self._available_animation_names(config)
         msg = {"text": text, "timestamp": timestamp}
         if pet_id:
             msg["pet_id"] = pet_id
@@ -1923,7 +1980,9 @@ class ApiServer:
         self._user_messages.append(msg)
         if self._openclaw_loop and self._openclaw_loop.is_running():
             asyncio.run_coroutine_threadsafe(
-                self._forward_to_openclaw(text, timestamp, pet_id, agent),
+                self._forward_to_openclaw(
+                    text, timestamp, pet_id, agent, animations
+                ),
                 loop=self._openclaw_loop,
             )
         else:
@@ -1939,10 +1998,16 @@ class ApiServer:
         text = data.get("text")
         if not isinstance(text, str) or not text.strip():
             return web.json_response({"success": False, "error": "text is required"}, status=400)
-        try:
-            duration = int(data.get("duration", 5000))
-        except (TypeError, ValueError):
-            return web.json_response({"success": False, "error": "duration must be an integer"}, status=400)
+        duration = data.get("duration", DEFAULT_REPLY_DURATION_MS)
+        if type(duration) is not int:
+            return web.json_response(
+                {"success": False, "error": "duration must be an integer"}, status=400
+            )
+        if not 0 <= duration <= 60000:
+            return web.json_response(
+                {"success": False, "error": "duration must be between 0 and 60000"},
+                status=400,
+            )
         try:
             await self._run_pet_operation(
                 request, lambda pet: pet.show_custom_bubble_requested.emit(text.strip(), duration)
@@ -2087,7 +2152,11 @@ class ApiServer:
             pet, resolved_id = await self._run_in_main_thread(resolve_target)
             if self._consume_response_fingerprint(resolved_id, text):
                 return web.json_response({"received": True, "suppressed": True})
-            await self._run_in_main_thread(lambda: pet.show_chat_bubble_requested.emit(text))
+            await self._run_in_main_thread(
+                lambda: pet.show_custom_bubble_requested.emit(
+                    text, DEFAULT_REPLY_DURATION_MS
+                )
+            )
         except Exception as error:
             return self._error_response(error)
         return web.json_response({"received": True, "suppressed": False})

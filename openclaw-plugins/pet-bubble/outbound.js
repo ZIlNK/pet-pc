@@ -1,6 +1,6 @@
 ﻿import { resolveChannelConfig } from "./plugin-config.js";
 
-const DEFAULT_DURATION = 15000;
+const DEFAULT_DURATION = 10000;
 const MAX_TEXT_LENGTH = 1000;
 
 function unwrapJsonFence(text) {

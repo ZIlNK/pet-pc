@@ -61,7 +61,8 @@ Content-Type: application/json
   "timestamp": "2026-07-27T12:30:25+08:00",
   "runtime": {
     "replyLength": "normal",
-    "initiative": "low"
+    "initiative": "low",
+    "animations": ["idle", "sit", "read", "bored", "eat", "sleep", "write", "body_tap", "tail_wag", "head", "hui"]
   }
 }
 ```
@@ -74,6 +75,7 @@ Content-Type: application/json
 - 首版只接受 `chatType=direct`；
 - 回复长度只接受 `short|normal|detailed`；
 - 主动性只接受 `low|normal|high`；
+- `animations` 由桌宠实例动态提供，只包含当前启用且可直接播放的动画动作名；
 - 共享密钥缺失时接口不可用，密钥错误返回 `403`。
 
 HTTP `202 Accepted` 只表示消息已进入异步处理，不表示 Agent 已完成回复。请求失败后 Desktop Pet 不自动补发 Hooks，避免“服务已接收但客户端超时”造成重复回复。
@@ -122,6 +124,7 @@ Channel 保留用户原文作为 `rawBody` 和 `body`，仅在 `bodyForAgent` �
 - 遵守该实例的回复长度和主动性偏好；
 - 只输出一个最终 JSON 对象，不使用 Markdown 代码围栏；
 - 不输出 `pet_id`，不调用 Desktop Pet MCP 工具；
+- `animation` 只能使用运行约束中列出的精确动作名，或使用 `null`；
 - 记忆操作只能修改 `MEMORY.md` 的受控区域。
 
 最终回复：
@@ -130,7 +133,7 @@ Channel 保留用户原文作为 `rawBody` 和 `body`，仅在 `bodyForAgent` �
 {
   "text": "做得很好，休息一下吧。",
   "animation": "sit",
-  "duration": 15000
+  "duration": 10000
 }
 ```
 
@@ -138,7 +141,7 @@ Channel 保留用户原文作为 `rawBody` 和 `body`，仅在 `bodyForAgent` �
 
 - `text` 必填、去除首尾空白后非空，最大 1000 字符；
 - `animation` 可省略语义上为空，但结构化对象中建议显式为动画名或 `null`；
-- `duration` 默认 15000，必须是 0～60000 的整数；
+- `duration` 默认 10000，必须是 0～60000 的整数；
 - 结构解析失败时完整最终文字作为纯文字回退；
 - 目标动画不存在时 `/respond` 仍显示文字，并返回 `text_only` 降级信息。
 
@@ -158,7 +161,7 @@ Content-Type: application/json
 {
   "text": "回复内容",
   "animation": "sit",
-  "duration": 15000
+  "duration": 10000
 }
 ```
 

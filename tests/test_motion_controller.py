@@ -124,3 +124,45 @@ class _FakeScreenManager:
 class ScreenInfoStub:
     def __init__(self, index):
         self.index = index
+
+
+def test_force_animation_plays_without_changing_random_mode():
+    class Action:
+        name = "write"
+
+    pet = MockPet()
+    pet.effective_actions = [Action()]
+    controller = MotionModeController(pet)
+    captured = []
+    controller.play_animation_requested.connect(captured.append)
+
+    assert controller.play_animation("write") is False
+    assert controller.play_animation("write", force=True) is True
+    assert controller.get_mode() == "random"
+    assert captured == ["write"]
+
+
+def test_force_animation_bypasses_wait_for_running_animation():
+    class RunningMovie:
+        class State:
+            name = "Running"
+
+        def state(self):
+            return self.State()
+
+    class Action:
+        name = "write"
+
+    pet = MockPet()
+    pet.current_gif = RunningMovie()
+    pet.effective_actions = [Action()]
+    controller = MotionModeController(pet)
+    controller.set_mode("motion")
+    captured = []
+    controller.play_animation_requested.connect(captured.append)
+
+    assert controller.play_animation("write") is False
+    assert captured == []
+
+    assert controller.play_animation("write", force=True) is True
+    assert captured == ["write"]

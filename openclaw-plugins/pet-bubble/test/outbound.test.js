@@ -36,13 +36,13 @@ test("falls back to plain text for invalid structured replies", () => {
   assert.deepEqual(parsePetBubbleReply('{"text":"hello","duration":-1}'), {
     text: '{"text":"hello","duration":-1}',
     animation: null,
-    duration: 15000,
+    duration: 10000,
     structured: false
   });
   assert.deepEqual(parsePetBubbleReply("plain reply"), {
     text: "plain reply",
     animation: null,
-    duration: 15000,
+    duration: 10000,
     structured: false
   });
 });
@@ -84,7 +84,7 @@ test("sendText delivers plain final text without MCP", async () => {
   assert.deepEqual(JSON.parse(captured.options.body), {
     text: "plain reply",
     animation: null,
-    duration: 15000
+    duration: 10000
   });
   assert.equal(result.structured, false);
 });

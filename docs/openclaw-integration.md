@@ -255,7 +255,7 @@ Agent 的最终输出协议是：
 {
   "text": "回复内容",
   "animation": "sit",
-  "duration": 15000
+  "duration": 10000
 }
 ```
 

@@ -49,6 +49,7 @@ class MockAPI:
         self._animations = (
             animations if animations is not None else ["sit", "walk", "sleep"]
         )
+        self.play_animation_calls = []
 
     def get_position(self):
         return self._position
@@ -75,7 +76,8 @@ class MockAPI:
     def move_to_edge(self, edge, screen=None):
         return True
 
-    def play_animation(self, name):
+    def play_animation(self, name, *, force=False):
+        self.play_animation_calls.append((name, force))
         return True
 
     def play_walk(self, direction, screen=None):
@@ -910,9 +912,12 @@ async def test_openclaw_reply_without_to_falls_back_to_primary():
         assert resp.status == 200
         data = await resp.json()
         assert data["received"] is True
-        platform.get_pet_widget("primary1").show_chat_bubble_requested.emit.assert_called_once_with(
-            "hello"
+        platform.get_pet_widget("primary1").show_custom_bubble_requested.emit.assert_called_once_with(
+            "hello", 10000
         )
+        platform.get_pet_widget(
+            "primary1"
+        ).show_chat_bubble_requested.emit.assert_not_called()
     finally:
         await client.close()
 
@@ -929,10 +934,11 @@ async def test_openclaw_reply_platform_routes_by_to():
             json={"to": "petB", "text": "hi from agent"},
         )
         assert resp.status == 200
-        p.get_pet_widget("primary1").show_chat_bubble_requested.emit.assert_not_called()
-        p.get_pet_widget("petB").show_chat_bubble_requested.emit.assert_called_once_with(
-            "hi from agent"
+        p.get_pet_widget("primary1").show_custom_bubble_requested.emit.assert_not_called()
+        p.get_pet_widget("petB").show_custom_bubble_requested.emit.assert_called_once_with(
+            "hi from agent", 10000
         )
+        p.get_pet_widget("petB").show_chat_bubble_requested.emit.assert_not_called()
     finally:
         await client.close()
 
@@ -946,7 +952,7 @@ async def test_openclaw_reply_unknown_to_returns_404_without_fallback():
             "/api/openclaw/reply", json={"to": "missing", "text": "hello"}
         )
         assert resp.status == 404
-        p.get_pet_widget("primary1").show_chat_bubble_requested.emit.assert_not_called()
+        p.get_pet_widget("primary1").show_custom_bubble_requested.emit.assert_not_called()
     finally:
         await client.close()
 
@@ -961,7 +967,7 @@ async def test_openclaw_reply_empty_to_does_not_fall_back():
         assert resp.status == 404
         platform.get_pet_widget(
             "primary1"
-        ).show_chat_bubble_requested.emit.assert_not_called()
+        ).show_custom_bubble_requested.emit.assert_not_called()
     finally:
         await client.close()
 
@@ -977,7 +983,7 @@ async def test_openclaw_reply_null_to_is_invalid():
         assert resp.status == 400
         platform.get_pet_widget(
             "primary1"
-        ).show_chat_bubble_requested.emit.assert_not_called()
+        ).show_custom_bubble_requested.emit.assert_not_called()
     finally:
         await client.close()
 
@@ -1219,6 +1225,16 @@ async def test_tools_call_maps_typed_errors(error, expected_status):
         await client.close()
 
 
+def test_available_animation_names_uses_enabled_animation_actions():
+    config = SimpleNamespace(actions={
+        "sit": {"enabled": True, "type": "animation"},
+        "sleep": {"enabled": False, "type": "animation"},
+        "walk": {"enabled": True, "type": "movement"},
+        "read": {"enabled": True, "type": "animation"},
+    })
+    assert ApiServer._available_animation_names(config) == ["sit", "read"]
+
+
 async def test_forward_to_openclaw_independent_agent_hook(monkeypatch, platform_with_two_pets):
     captured = {}
 
@@ -1260,7 +1276,9 @@ async def test_forward_to_openclaw_independent_agent_hook(monkeypatch, platform_
         "reply_length": "short",
         "initiative": "low",
     }
-    await server._forward_to_openclaw("hello", "ignored", "secondary2", agent)
+    await server._forward_to_openclaw(
+        "hello", "ignored", "secondary2", agent, ["sit", "sleep"]
+    )
 
     assert captured["url"].endswith("/hooks/agent")
     assert captured["headers"]["Authorization"] == "Bearer hooks-token"
@@ -1270,10 +1288,12 @@ async def test_forward_to_openclaw_independent_agent_hook(monkeypatch, platform_
     assert captured["body"]["to"] == "secondary2"
     runtime_message = captured["body"]["message"]
     assert "exactly one final JSON object" in runtime_message
-    assert '"duration":15000' in runtime_message
+    assert '"duration":10000' in runtime_message
     assert "do not call respond_as_pet" in runtime_message
     assert "do not include pet_id" in runtime_message.lower()
     assert "any desktop-pet MCP tool" in runtime_message
+    assert 'Available animation names: ["sit", "sleep"]' in runtime_message
+    assert "one exact listed name or null" in runtime_message
 
 
 async def test_forward_to_openclaw_independent_agent_channel(
@@ -1325,7 +1345,11 @@ async def test_forward_to_openclaw_independent_agent_channel(
         "initiative": "high",
     }
     await server._forward_to_openclaw(
-        "hello", "2026-07-24T12:30:25", "secondary2", agent
+        "hello",
+        "2026-07-24T12:30:25",
+        "secondary2",
+        agent,
+        ["sit", "sleep"],
     )
 
     assert captured["calls"] == 1
@@ -1340,7 +1364,11 @@ async def test_forward_to_openclaw_independent_agent_channel(
         "text": "hello",
         "chatType": "direct",
         "timestamp": "2026-07-24T12:30:25",
-        "runtime": {"replyLength": "short", "initiative": "high"},
+        "runtime": {
+            "replyLength": "short",
+            "initiative": "high",
+            "animations": ["sit", "sleep"],
+        },
     }
     assert "sessionKey" not in captured["body"]
     assert "Authorization" not in captured["headers"]
@@ -1359,6 +1387,51 @@ def test_add_user_message_records_pet_and_agent(platform_with_two_pets):
     assert queued["agent_id"] == "healer-cat"
 
 
+async def test_show_message_tool_uses_reply_default(
+    mock_run_in_main_thread, platform_with_two_pets
+):
+    server = ApiServer(platform=platform_with_two_pets)
+    result = await server._tool_show_message({
+        "pet_id": "secondary2", "text": "hello"
+    })
+
+    assert result == {
+        "success": True,
+        "data": {"text": "hello", "duration": 10000},
+    }
+    platform_with_two_pets.get_pet_widget(
+        "secondary2"
+    ).show_custom_bubble_requested.emit.assert_called_once_with("hello", 10000)
+
+
+async def test_show_message_tool_rejects_invalid_duration(platform_with_two_pets):
+    result = await ApiServer(platform=platform_with_two_pets)._tool_show_message({
+        "pet_id": "secondary2", "text": "hello", "duration": 60001
+    })
+    assert result["success"] is False
+    assert "duration" in result["error"]
+
+
+async def test_show_message_http_uses_reply_default(platform_with_two_pets):
+    server = ApiServer(platform=platform_with_two_pets)
+    client = await _make_client(server)
+    try:
+        response = await client.post(
+            "/api/pets/secondary2/message", json={"text": "hello"}
+        )
+        assert response.status == 200
+        assert await response.json() == {
+            "success": True,
+            "text": "hello",
+            "duration": 10000,
+        }
+        platform_with_two_pets.get_pet_widget(
+            "secondary2"
+        ).show_custom_bubble_requested.emit.assert_called_once_with("hello", 10000)
+    finally:
+        await client.close()
+
+
 async def test_respond_as_pet_plays_animation_and_shows_text(
     mock_run_in_main_thread, platform_with_two_pets
 ):
@@ -1372,14 +1445,16 @@ async def test_respond_as_pet_plays_animation_and_shows_text(
         "data": {
             "pet_id": "secondary2",
             "text": "good job",
-            "duration": 15000,
+            "duration": 10000,
             "requested_animation": "sit",
             "played_animation": "sit",
             "fallback": None,
         },
     }
     widget = platform_with_two_pets.get_pet_widget("secondary2")
-    widget.show_custom_bubble_requested.emit.assert_called_once_with("good job", 15000)
+    assert widget.api.play_animation_calls == [("sit", True)]
+    assert widget.api.get_mode() == "random"
+    widget.show_custom_bubble_requested.emit.assert_called_once_with("good job", 10000)
 
 
 async def test_respond_as_pet_missing_animation_falls_back_to_text(
@@ -1425,7 +1500,7 @@ def test_tools_expose_respond_as_pet(platform_with_two_pets):
         if item["function"]["name"] == "respond_as_pet"
     )
     assert definition["parameters"]["required"] == ["pet_id", "text"]
-    assert definition["parameters"]["properties"]["duration"]["default"] == 15000
+    assert definition["parameters"]["properties"]["duration"]["default"] == 10000
 
 
 async def test_openclaw_reply_suppresses_recent_respond_as_pet_duplicate(
@@ -1434,6 +1509,7 @@ async def test_openclaw_reply_suppresses_recent_respond_as_pet_duplicate(
     server = ApiServer(platform=platform_with_two_pets)
     await server._tool_respond_as_pet({"pet_id": "secondary2", "text": "same reply"})
     widget = platform_with_two_pets.get_pet_widget("secondary2")
+    widget.show_custom_bubble_requested.emit.reset_mock()
     client = await _make_client(server)
     try:
         resp = await client.post(
@@ -1441,7 +1517,7 @@ async def test_openclaw_reply_suppresses_recent_respond_as_pet_duplicate(
         )
         assert resp.status == 200
         assert await resp.json() == {"received": True, "suppressed": True}
-        widget.show_chat_bubble_requested.emit.assert_not_called()
+        widget.show_custom_bubble_requested.emit.assert_not_called()
     finally:
         await client.close()
 

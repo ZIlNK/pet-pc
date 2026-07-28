@@ -298,6 +298,53 @@ NAV_BUTTON_STYLE = f"""
     }}
 """
 
+CHAT_INPUT_CONTAINER_STYLE = f"""
+    QWidget#chatBubbleContainer {{
+        background: {CARD};
+        border: 1px solid {BORDER};
+        border-radius: {RADIUS_CARD}px;
+    }}
+"""
+
+INLINE_CLOSE_BUTTON_STYLE = f"""
+    QPushButton {{
+        background: transparent;
+        border: none;
+        border-radius: 10px;
+        color: {TEXT_SECONDARY};
+        font-size: 14px;
+        font-weight: 700;
+        padding: 0;
+    }}
+    QPushButton:hover {{
+        background: {BORDER};
+        color: {TEXT_BODY};
+    }}
+"""
+
+REPLY_BUBBLE_STYLE = f"""
+    QLabel {{
+        background: {SUCCESS_BG};
+        border: 1px solid {SUCCESS_BORDER};
+        border-radius: {RADIUS_CARD}px;
+        padding: 8px 12px;
+        color: {TEXT_BODY};
+        font-size: {FONT_SIZE_BODY}px;
+    }}
+"""
+
+REPLY_SCROLL_AREA_STYLE = f"""
+    QScrollArea {{
+        background: transparent;
+        border: none;
+    }}
+    QScrollArea > QWidget > QWidget {{
+        background: transparent;
+    }}
+{scrollbar_style()}
+"""
+
+
 MENU_STYLE = f"""
     QMenu {{
         background: {CARD};

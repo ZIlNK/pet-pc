@@ -13,6 +13,8 @@ const IDENTIFIER_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 const REPLY_LENGTHS = new Set(["short", "normal", "detailed"]);
 const INITIATIVE_LEVELS = new Set(["low", "normal", "high"]);
 const MAX_MESSAGE_LENGTH = 10000;
+const MAX_ANIMATION_NAMES = 100;
+const MAX_ANIMATION_NAME_LENGTH = 128;
 
 function logPlugin(api, level, message) {
   const logger = api.log ?? api.logger;
@@ -118,8 +120,15 @@ export function validateInboundPayload(body) {
     : {};
   const replyLength = runtime.replyLength ?? "normal";
   const initiative = runtime.initiative ?? "low";
+  const rawAnimations = runtime.animations ?? [];
   if (!REPLY_LENGTHS.has(replyLength)) throw new MemoryStoreError("invalid runtime.replyLength");
   if (!INITIATIVE_LEVELS.has(initiative)) throw new MemoryStoreError("invalid runtime.initiative");
+  if (!Array.isArray(rawAnimations) || rawAnimations.length > MAX_ANIMATION_NAMES ||
+      rawAnimations.some((name) => typeof name !== "string" || !name ||
+        name.length > MAX_ANIMATION_NAME_LENGTH || /[\u0000-\u001f\u007f]/.test(name))) {
+    throw new MemoryStoreError("invalid runtime.animations");
+  }
+  const animations = [...new Set(rawAnimations)];
   const parsedTimestamp = typeof body.timestamp === "number"
     ? body.timestamp
     : Date.parse(body.timestamp ?? "");
@@ -129,17 +138,23 @@ export function validateInboundPayload(body) {
     text,
     replyLength,
     initiative,
+    animations,
     timestamp: Number.isFinite(parsedTimestamp) ? parsedTimestamp : Date.now()
   };
 }
 
 export function buildAgentMessage(payload) {
+  const animations = Array.isArray(payload.animations) ? payload.animations : [];
+  const animationRule = animations.length
+    ? `Available animation names: ${JSON.stringify(animations)}. Set animation to one exact listed name or null. `
+    : `No animations are currently available; animation must be null. `;
   return (
     `[DesktopPet pet_id=${payload.from}; reply_length=${payload.replyLength}; ` +
     `initiative=${payload.initiative}. Return exactly one final JSON object and no Markdown fences: ` +
-    `{"text":"reply shown to the user","animation":null,"duration":15000}. ` +
+    `{"text":"reply shown to the user","animation":null,"duration":10000}. ` +
     `Do not include pet_id and do not call respond_as_pet, get_pet_status, or any desktop-pet MCP tool. ` +
-    `animation may be null or an animation name; duration must be an integer from 0 to 60000. ` +
+    animationRule +
+    `duration must be an integer from 0 to 60000. ` +
     `Keep text within 1000 characters. Memory commands may only modify the ` +
     `desktop-pet-managed-memory block in MEMORY.md.]\n\nUser message: ${payload.text}`
   );

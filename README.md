@@ -218,7 +218,7 @@ uv run desktop-pet bubble <pet_id> --hide                # 隐藏文字气泡
 | `POST` | `/api/pets/<pet_id>/animation` | 指定实例播放动画 | `{"name": "sit"}` |
 | `POST` | `/api/pets/<pet_id>/message` | 指定实例显示文字气泡 | `{"text": "你好", "duration": 0}` |
 | `POST` | `/api/pets/<pet_id>/message/hide` | 隐藏指定实例文字气泡 | - |
-| `POST` | `/api/pets/<pet_id>/respond` | 原子显示文字并可选播放动画 | `{"text":"你好","animation":"sit","duration":15000}` |
+| `POST` | `/api/pets/<pet_id>/respond` | 原子显示文字并可选播放动画 | `{"text":"你好","animation":"sit","duration":10000}` |
 | `POST` | `/api/openclaw/reply` | OpenClaw 旧出站适配器兼容回调 | `{"to":"<pet_id>","text":"你好"}` |
 
 ### 快速示例

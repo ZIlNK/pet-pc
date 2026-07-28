@@ -86,11 +86,11 @@ class MotionModeController(QObject):
         self.move_to_edge_requested.emit(edge, screen_index)
         return True
 
-    def play_animation(self, name: str) -> bool:
-        if self._mode != "motion":
+    def play_animation(self, name: str, *, force: bool = False) -> bool:
+        if self._mode != "motion" and not force:
             return False
 
-        if self._animation_wait:
+        if self._animation_wait and not force:
             movie = getattr(self._pet, "current_gif", None)
             if movie is not None and getattr(movie.state(), "name", "") == "Running":
                 return False

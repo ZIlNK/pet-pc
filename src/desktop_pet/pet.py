@@ -3,7 +3,7 @@ import random
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from PyQt6.QtWidgets import QLabel, QWidget, QMenu, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout
-from PyQt6.QtGui import QPixmap, QMovie, QImageReader, QAction, QCursor
+from PyQt6.QtGui import QPixmap, QMovie, QImageReader, QAction, QCursor, QCloseEvent, QMoveEvent
 from PyQt6.QtCore import Qt, QPoint, QTimer, QSize, pyqtSignal
 
 from .states import PetState
@@ -24,15 +24,17 @@ from .motion_controller import MotionModeController
 from .motion_control_panel import MotionControlPanel
 from .behavior_scheduler import BehaviorScheduler
 from .screen_manager import ScreenInfo
+from .reply_bubble import DEFAULT_REPLY_DURATION_MS, MAX_STACK_HEIGHT, ReplyBubbleStack
 from .ui_style import (
     BORDER,
     CARD,
+    CHAT_INPUT_CONTAINER_STYLE,
+    INLINE_CLOSE_BUTTON_STYLE,
     INPUT_STYLE,
     MENU_STYLE,
     PRIMARY_BUTTON_STYLE,
     RADIUS_CARD,
     TEXT_BODY,
-    TEXT_SECONDARY,
     apply_shadow,
     fade_in,
     fade_out,
@@ -56,92 +58,56 @@ BUBBLE_LABEL_STYLE = f"""
 
 
 class ChatBubble(QWidget):
-    """可交互的聊天气泡，用于显示消息和接收用户输入。"""
+    """Compact chat input panel shown above a desktop pet."""
 
-    message_sent = pyqtSignal(str)  # 用户发送消息时触发
-    close_requested = pyqtSignal()  # 点击关闭按钮时触发
+    message_sent = pyqtSignal(str)
+    close_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
+        )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setFixedWidth(220)
+        self.setFixedWidth(330)
 
         outer_layout = QVBoxLayout(self)
-        # 透明外壳为容器投影预留绘制空间
         outer_layout.setContentsMargins(14, 10, 14, 16)
         outer_layout.setSpacing(0)
 
         container = QWidget(self)
         container.setObjectName("chatBubbleContainer")
-        container.setStyleSheet(f"""
-            QWidget#chatBubbleContainer {{
-                background: {CARD};
-                border: 1px solid {BORDER};
-                border-radius: {RADIUS_CARD}px;
-            }}
-        """)
+        container.setStyleSheet(CHAT_INPUT_CONTAINER_STYLE)
         apply_shadow(container)
         outer_layout.addWidget(container)
 
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(10, 6, 6, 10)
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(8, 8, 6, 8)
         layout.setSpacing(6)
 
-        # 顶部行：弹簧 + 关闭按钮
-        header_layout = QHBoxLayout()
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.addStretch()
-        self.close_button = QPushButton("×")
-        self.close_button.setFixedSize(20, 20)
-        self.close_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.close_button.setToolTip("关闭")
-        self.close_button.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent;
-                border: none;
-                border-radius: 10px;
-                color: {TEXT_SECONDARY};
-                font-size: 14px;
-                font-weight: 700;
-                padding: 0;
-            }}
-            QPushButton:hover {{
-                background: {BORDER};
-                color: {TEXT_BODY};
-            }}
-        """)
-        self.close_button.clicked.connect(self.close_requested.emit)
-        header_layout.addWidget(self.close_button)
-        layout.addLayout(header_layout)
-
-        # 消息显示区域
-        self.message_label = QLabel()
-        self.message_label.setWordWrap(True)
-        self.message_label.setStyleSheet(
-            f"color: {TEXT_BODY}; font-size: 12px; padding: 4px; "
-            "background: transparent; border: none;"
-        )
-        self.message_label.setMaximumHeight(80)
-        layout.addWidget(self.message_label)
-
-        # 输入框
         self.input_field = QLineEdit()
-        self.input_field.setPlaceholderText("输入消息...")
+        self.input_field.setPlaceholderText("\u6709\u4ec0\u4e48\u60f3\u8bf4\u7684\uff1f")
         self.input_field.setStyleSheet(INPUT_STYLE)
         self.input_field.returnPressed.connect(self._on_send)
-        layout.addWidget(self.input_field)
+        layout.addWidget(self.input_field, 1)
 
-        # 发送按钮
-        self.send_button = QPushButton("发送")
+        self.send_button = QPushButton("\u53d1\u9001")
         self.send_button.setStyleSheet(PRIMARY_BUTTON_STYLE)
         self.send_button.clicked.connect(self._on_send)
         layout.addWidget(self.send_button)
 
+        self.close_button = QPushButton("\u00d7")
+        self.close_button.setFixedSize(20, 20)
+        self.close_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.close_button.setToolTip("\u5173\u95ed")
+        self.close_button.setStyleSheet(INLINE_CLOSE_BUTTON_STYLE)
+        self.close_button.clicked.connect(self.close_requested.emit)
+        layout.addWidget(self.close_button)
+
         self.hide()
 
-    def set_message(self, text: str):
-        self.message_label.setText(text)
+    def focus_input(self) -> None:
+        QTimer.singleShot(0, self.input_field.setFocus)
 
     def _on_send(self):
         text = self.input_field.text().strip()
@@ -647,6 +613,8 @@ class DesktopPet(QWidget):
         self.chat_bubble = ChatBubble()
         self.chat_bubble.message_sent.connect(self._on_chat_message_sent)
         self.chat_bubble.close_requested.connect(self.hide_chat_bubble)
+        self.reply_bubbles = ReplyBubbleStack()
+        self._interactive_prompt_reply = False
 
         original_width = self.regular_pixmap.width()
         increased_width = original_width + 100
@@ -704,7 +672,7 @@ class DesktopPet(QWidget):
         self.setMouseTracking(True)
 
     def resizeEvent(self, event):
-        """检测跨屏 DPI 缩放并强制还原到自然尺寸。"""
+        """Keep the pet at its natural size after cross-screen DPI changes."""
         super().resizeEvent(event)
         natural_w, natural_h = self._natural_pet_size
         cur_w, cur_h = self.width(), self.height()
@@ -712,6 +680,20 @@ class DesktopPet(QWidget):
             self._in_size_reset = True
             self.resize(natural_w, natural_h)
             self._in_size_reset = False
+        self._position_auxiliary_windows()
+
+    def moveEvent(self, event: QMoveEvent):
+        super().moveEvent(event)
+        self._position_auxiliary_windows()
+
+    def closeEvent(self, event: QCloseEvent):
+        chat_bubble = getattr(self, "chat_bubble", None)
+        if chat_bubble is not None:
+            chat_bubble.close()
+        reply_bubbles = getattr(self, "reply_bubbles", None)
+        if reply_bubbles is not None:
+            reply_bubbles.close()
+        super().closeEvent(event)
 
     def _natural_pet_height(self) -> int:
         """返回 widget 的逻辑高度(用于贴底计算,避免 DPI 缩放后用错尺寸)。"""
@@ -793,60 +775,101 @@ class DesktopPet(QWidget):
         self.rest_timer_seconds = rest_config.interval_minutes * 60
         self.rest_timer.start(rest_config.interval_minutes * 60 * 1000)
 
-    def show_custom_bubble(self, text: str, duration_ms: int = 5000):
-        """显示自定义气泡消息（用于 CLI/MCP/AI 消息展示）。
+    def _reply_stack_max_height(self) -> int:
+        screen = self._safe_current_screen_info()
+        if screen is None:
+            return MAX_STACK_HEIGHT
+        return min(MAX_STACK_HEIGHT, max(1, int(screen.available_geometry.height() * 0.5)))
 
-        视觉样式同休息提醒气泡（灰边框、居中、120px），但保持鼠标穿透
-        以避免点击误触休息倒计时。
+    def _position_auxiliary_windows(self) -> None:
+        screen = self._safe_current_screen_info() if hasattr(self, "screen_manager") else None
+        if screen is None:
+            return
 
-        Args:
-            text: 要显示的消息文本
-            duration_ms: 显示时长（毫秒），0=持续显示，默认 5 秒
-        """
-        self.bubble_label.setText(text)
-        self.bubble_label.setStyleSheet(BUBBLE_LABEL_STYLE)
-        bubble_width = 120
-        x_pos = 10
-        y_pos = 10
-        self.bubble_label.setFixedWidth(bubble_width)
-        self.bubble_label.move(x_pos, y_pos)
-        self.bubble_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.bubble_label.show()
-        logger.info(
-            "[CustomBubble] Showing reply for pet=%s duration=%d text=%s",
-            self._instance_config.pet_id,
-            duration_ms,
+        gap = 8
+        pet_label = getattr(self, "label", None)
+        label_x = pet_label.x() if pet_label is not None else 0
+        label_y = pet_label.y() if pet_label is not None else 0
+        label_width = pet_label.width() if pet_label is not None else self.width()
+        pet_center_x = self.x() + label_x + label_width // 2
+        pet_top = self.y() + label_y
+
+        reply_bubbles = getattr(self, "reply_bubbles", None)
+        reply_visible = reply_bubbles is not None and reply_bubbles.isVisible()
+        if reply_visible:
+            reply_x = pet_center_x - reply_bubbles.width() // 2
+            reply_y = pet_top - reply_bubbles.height() - gap
+            reply_x, reply_y = self.screen_manager.clamp_to_screen(
+                screen,
+                reply_x,
+                reply_y,
+                reply_bubbles.width(),
+                reply_bubbles.height(),
+            )
+            reply_bubbles.move(reply_x, reply_y)
+
+        chat_bubble = getattr(self, "chat_bubble", None)
+        if chat_bubble is not None and chat_bubble.isVisible():
+            chat_x = pet_center_x - chat_bubble.width() // 2
+            if reply_visible:
+                chat_y = reply_bubbles.y() - chat_bubble.height() - gap
+            else:
+                chat_y = pet_top - chat_bubble.height() - gap
+            chat_x, chat_y = self.screen_manager.clamp_to_screen(
+                screen, chat_x, chat_y, chat_bubble.width(), chat_bubble.height()
+            )
+            chat_bubble.move(chat_x, chat_y)
+
+    def show_custom_bubble(
+        self, text: str, duration_ms: int = DEFAULT_REPLY_DURATION_MS
+    ):
+        """Show a sentence-based reply stack above the pet."""
+        self._interactive_prompt_reply = False
+        shown = self.reply_bubbles.show_reply(
             text,
+            duration_ms=duration_ms,
+            max_height=self._reply_stack_max_height(),
         )
-        if duration_ms > 0:
-            QTimer.singleShot(duration_ms, self._hide_custom_bubble)
+        if shown:
+            self._position_auxiliary_windows()
+            logger.info(
+                "[CustomBubble] Showing reply for pet=%s duration=%d text=%s",
+                self._instance_config.pet_id,
+                duration_ms,
+                text,
+            )
 
     def _hide_custom_bubble(self):
-        """隐藏自定义气泡并恢复休息提醒气泡默认文案"""
-        self.bubble_label.hide()
+        """Immediately hide the independent reply bubble stack."""
+        self._interactive_prompt_reply = False
+        self.reply_bubbles.hide_reply()
         logger.info(
             "[CustomBubble] Hidden reply for pet=%s",
             self._instance_config.pet_id,
         )
-        self.bubble_label.setText("注意休息！\n点击开始倒计时")
 
     def show_chat_bubble(self, message: str = ""):
-        """显示可交互的聊天气泡。
-
-        Args:
-            message: 初始显示的消息文本
-        """
+        """Show the compact input panel and an optional transient prompt."""
         if message:
-            self.chat_bubble.set_message(message)
-        # 定位在宠物上方
-        self.chat_bubble.move(self.x() - 110, self.y() - 140)
+            self.reply_bubbles.show_reply(
+                message,
+                duration_ms=DEFAULT_REPLY_DURATION_MS,
+                max_height=self._reply_stack_max_height(),
+            )
+            self._interactive_prompt_reply = True
         self.chat_bubble.show()
+        self._position_auxiliary_windows()
+        self.chat_bubble.raise_()
         fade_in(self.chat_bubble)
+        self.chat_bubble.focus_input()
 
     def hide_chat_bubble(self):
-        """隐藏聊天气泡"""
+        """Hide the input panel and its optional interactive prompt."""
         if self.chat_bubble.isVisible():
             fade_out(self.chat_bubble)
+        if self._interactive_prompt_reply:
+            self.reply_bubbles.hide_reply()
+            self._interactive_prompt_reply = False
 
     def _on_chat_message_sent(self, text: str):
         """Forward a chat-bubble message to the platform API queue."""
@@ -854,15 +877,13 @@ class DesktopPet(QWidget):
             text, pet_id=self._instance_config.pet_id
         )
         logger.info("[ChatBubble] User sent message: %s", text)
+
     def _toggle_chat_bubble(self):
-        """切换聊天气泡的显示/隐藏"""
+        """Toggle the compact chat input panel."""
         if self.chat_bubble.isVisible():
-            fade_out(self.chat_bubble)
+            self.hide_chat_bubble()
         else:
-            self.chat_bubble.set_message("有什么想说的？")
-            self.chat_bubble.move(self.x() - 110, self.y() - 140)
-            self.chat_bubble.show()
-            fade_in(self.chat_bubble)
+            self.show_chat_bubble()
 
     def switch_to_gif(self, direction: str = 'right'):
         if self.state == PetState.REST_REMINDER:
@@ -923,9 +944,12 @@ class DesktopPet(QWidget):
 
             self.previous_frame = -1
             self.gif_played_once = False
+            self.state = PetState.ANIMATING
 
-            movie.start()
+            # QMovie.start() may synchronously emit frameChanged. Publish the new
+            # movie first so the callback never reads frame data from the old one.
             self.current_gif = movie
+            movie.start()
         else:
             logger.debug("Animation GIF not found, showing static image")
             self.switch_to_static()
@@ -1760,9 +1784,12 @@ class DesktopPet(QWidget):
 
             self.previous_frame = -1
             self.gif_played_once = False
+            self.state = PetState.ANIMATING
 
-            movie.start()
+            # QMovie.start() may synchronously emit frameChanged. Publish the new
+            # movie first so the callback never reads frame data from the old one.
             self.current_gif = movie
+            movie.start()
         else:
             logger.debug("Animation GIF not found, showing static image")
             self.switch_to_static()
